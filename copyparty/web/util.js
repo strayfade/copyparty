@@ -973,6 +973,41 @@ function unix2iso_localtime(ts) {
 }
 
 
+var HUMANDATE_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function humandate_geist(ts) {
+    var utc = window.unix2ui === unix2iso,
+        d = new Date(ts * 1000),
+        now = new Date(),
+        y = utc ? d.getUTCFullYear() : d.getFullYear(),
+        mo = utc ? d.getUTCMonth() : d.getMonth(),
+        dy = utc ? d.getUTCDate() : d.getDate(),
+        h24 = utc ? d.getUTCHours() : d.getHours(),
+        mi = utc ? d.getUTCMinutes() : d.getMinutes(),
+        ny = utc ? now.getUTCFullYear() : now.getFullYear(),
+        nmo = utc ? now.getUTCMonth() : now.getMonth(),
+        ndy = utc ? now.getUTCDate() : now.getDate(),
+        ap = h24 >= 12 ? 'PM' : 'AM',
+        h12 = h24 % 12 || 12,
+        tstr = h12 + ':' + pad2(mi) + ' ' + ap,
+        yday = new Date(now.getTime() - 86400 * 1000),
+        yy = utc ? yday.getUTCFullYear() : yday.getFullYear(),
+        ymo = utc ? yday.getUTCMonth() : yday.getMonth(),
+        ydy = utc ? yday.getUTCDate() : yday.getDate();
+
+    if (y == ny && mo == nmo && dy == ndy)
+        return 'Today at ' + tstr;
+
+    if (y == yy && mo == ymo && dy == ydy)
+        return 'Yesterday at ' + tstr;
+
+    var dstr = HUMANDATE_MON[mo] + ' ' + dy;
+    if (y != ny)
+        dstr += ', ' + y;
+
+    return dstr + ' at ' + tstr;
+}
+
+
 function s2ms(s) {
     s = Math.floor(s);
     var m = Math.floor(s / 60);
@@ -1090,6 +1125,13 @@ function humansize_6c(b) {
 function humansize_7c(b) {
     var v = humansize_7g(b);
     return '<span class="fsz_' + v[1].charAt(0) + '">' + v[0] + '</span>';
+}
+function humansize_geist(b) {
+    var z = humansize_sud(b), v = z[0], u = z[1];
+    if (u == 'B')
+        return '' + Math.round(v);
+
+    return f2f(v, v >= 100 ? 0 : v >= 10 ? 1 : 2) + ' ' + u;
 }
 function humansize_fuzzy(b) {
     if (b <= 0) return "yes";
@@ -2140,8 +2182,8 @@ function repl(e) {
     var html = [
         '<p>js repl (prefix with <code>,</code> to allow raise)</p>',
         '<p><select id="repl_pre"></select>',
-        ' &nbsp; <button id="repl_pdel">❌ del</button>',
-        ' &nbsp; <button id="repl_pnew">💾 SAVE</button></p>'
+        ' &nbsp; <button id="repl_pdel"><span class="mi">delete</span> del</button>',
+        ' &nbsp; <button id="repl_pnew"><span class="mi">save</span> SAVE</button></p>'
     ];
 
     modal.prompt(html.join(''), '', function (cmd) {

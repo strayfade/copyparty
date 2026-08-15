@@ -1,7 +1,7 @@
 html .editor-toolbar>button { margin-left: -1px; border: 1px solid rgba(0,0,0,0.1) }
 html .editor-toolbar>button+button { border-left: 1px solid rgba(0,0,0,0) }
 html .editor-toolbar>button:hover,
-html .editor-toolbar>button:active { box-shadow: 0 .1em .3em #999; z-index: 9 }
+html .editor-toolbar>button:active { z-index: 9 }
 html .editor-toolbar>button:active,
 html .editor-toolbar>button.active { border-color: rgba(0,0,0,0.4); background: #fc0 }
 html .editor-toolbar>i.separator { border-left: 1px solid #ccc; }
@@ -97,9 +97,6 @@ html.z .CodeMirror {
 }
 html.z .CodeMirror-cursor {
 	border-color: #fff;
-}
-html.z .CodeMirror-selected {
-	box-shadow: 0 0 1px #0cf inset;
 }
 html.z .CodeMirror-selected,
 html.z .CodeMirror-selectedtext {

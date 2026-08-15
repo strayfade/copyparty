@@ -34,32 +34,32 @@
 		<form method="post" enctype="multipart/form-data" accept-charset="utf-8" action="{{ url_suf }}">
 			<input type="hidden" name="act" value="bput" />
 			<input type="file" name="f" multiple /><br />
-			<input type="submit" value="start upload">
+			<input type="submit" value="Start Upload">
 		</form>
-		<a id="bbsw" href="?b=u" rel="nofollow"><br />switch to basic browser</a>
+		<a id="bbsw" href="?b=u" rel="nofollow"><br />Switch to Basic Browser</a>
 	</div>
 
 	<div id="op_mkdir" class="opview opbox {% if not ls0 %}act{% endif %}">
 		<form method="post" enctype="multipart/form-data" accept-charset="utf-8" action="{{ url_suf }}">
 			<input type="hidden" name="act" value="mkdir" />
-			📂<input type="text" name="name" class="i" placeholder="awesome mix vol.1">
-			<input type="submit" value="make directory">
+			<span class="mi">create_new_folder</span><input type="text" name="name" class="i" placeholder="awesome mix vol.1">
+			<input type="submit" value="Make Directory">
 		</form>
 	</div>
 
 	<div id="op_new_md" class="opview opbox">
 		<form method="post" enctype="multipart/form-data" accept-charset="utf-8" action="{{ url_suf }}">
 			<input type="hidden" name="act" value="new_md" />
-			📝<input type="text" name="name" class="i" placeholder="weekend-plans">
-			<input type="submit" value="new file">
+			<span class="mi">note_add</span><input type="text" name="name" class="i" placeholder="weekend-plans">
+			<input type="submit" value="New File">
 		</form>
 		<span id="new_mdi"></span>
 	</div>
 
 	<div id="op_msg" class="opview opbox {% if not ls0 %}act{% endif %}">
 		<form method="post" enctype="application/x-www-form-urlencoded" accept-charset="utf-8" action="{{ url_suf }}">
-			📟<input type="text" name="msg" class="i" placeholder="lorem ipsum dolor sit amet">
-			<input type="submit" value="send msg to srv log">
+			<span class="mi">terminal</span><input type="text" name="msg" class="i" placeholder="lorem ipsum dolor sit amet">
+			<input type="submit" value="Send Message to Server Log">
 		</form>
 	</div>
 
@@ -70,7 +70,7 @@
 	<div id="op_cfg" class="opview opbox opwide"></div>
 
 	<h1 id="path">
-		<a href="#" id="entree">🌲</a>
+		<a href="#" id="entree"><span class="mi">account_tree</span></a>
 		{%- for n in vpnodes %}
 		<a href="{{ r }}/{{ n[0] }}">{{ n[1] }}</a>
 		{%- endfor %}
@@ -123,7 +123,6 @@
 
 	<p id="js_bork">Looks like javascript is broken; see "csp nonce" section in readme</p>
 
-	<a href="#" id="repl">π</a>
 
 </div>
 

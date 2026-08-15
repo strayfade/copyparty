@@ -7477,13 +7477,17 @@ class HttpCli(object):
                     margin = "DIR"
                 elif add_dk:
                     zs = absreal(fspath)
-                    margin = '<a href="%s?k=%s&zip=crc" rel="nofollow">zip</a>' % (
-                        quotep(href),
-                        self.gen_fk(2, self.args.dk_salt, zs, 0, 0)[:add_dk],
+                    margin = (
+                        '<a href="%s?k=%s&zip=crc" rel="nofollow"><span class="mi">download</span></a>'
+                        % (
+                            quotep(href),
+                            self.gen_fk(2, self.args.dk_salt, zs, 0, 0)[:add_dk],
+                        )
                     )
                 else:
-                    margin = '<a href="%s?zip=crc" rel="nofollow">zip</a>' % (
-                        quotep(href),
+                    margin = (
+                        '<a href="%s?zip=crc" rel="nofollow"><span class="mi">download</span></a>'
+                        % (quotep(href),)
                     )
             elif fn in hist:
                 margin = '<a href="%s.hist/%s" rel="nofollow">#%s</a>' % (

@@ -15,16 +15,16 @@
 <body>
 	<div id="wrap">
 		{%- if not in_shr %}
-		<a id="a" href="{{ r }}/?h{{ re }}" class="af">refresh</a>
-		<a id="v" href="{{ r }}/?hc" class="af">connect</a>
+		<a id="a" href="{{ r }}/?h{{ re }}" class="af">Refresh</a>
+		<a id="v" href="{{ r }}/?hc" class="af">Connect</a>
 
 			{%- if this.uname == '*' %}
 		<p id="b">howdy stranger &nbsp; <small>(you're not logged in)</small></p>
 			{%- else %}
 				{%- if this.args.idp_logout %}
-		<a id="c" href="{{ this.args.idp_logout }}" class="logout">logout</a>
+		<a id="c" href="{{ this.args.idp_logout }}" class="logout">Logout</a>
 				{%- else %}
-		<a id="c" href="{{ r }}/?pw=x" class="logout">logout</a>
+		<a id="c" href="{{ r }}/?pw=x" class="logout">Logout</a>
 				{%- endif %}
 		<p><span id="m">welcome back,</span> <strong id="un">{{ this.uname|e }}</strong></p>
 			{%- endif %}
@@ -39,7 +39,7 @@
 		{%- if ups %}
 		<h1 id="aa">incoming files:</h1>
 			<table class="vols">
-				<thead><tr><th>%</th><th>speed</th><th>eta</th><th>idle</th><th>dir</th><th>file</th></tr></thead>
+				<thead><tr><th>%</th><th>Speed</th><th>ETA</th><th>Idle</th><th>Dir</th><th>File</th></tr></thead>
 				<tbody>
 					{%- for u in ups %}
 					<tr><td>{{ u[0] }}</td><td>{{ u[1] }}</td><td>{{ u[2] }}</td><td>{{ u[3] }}</td><td><a href="{{ r }}{{ u[4] }}">{{ u[5]|e }}</a></td><td>{{ u[6]|e }}</td></tr>
@@ -51,7 +51,7 @@
 		{%- if dls %}
 		<h1 id="ae">active downloads:</h1>
 			<table class="vols">
-				<thead><tr><th>%</th><th>sent</th><th>speed</th><th>eta</th><th>idle</th><th></th><th>dir</th><th>file</th></tr></thead>
+				<thead><tr><th>%</th><th>Sent</th><th>Speed</th><th>ETA</th><th>Idle</th><th></th><th>Dir</th><th>File</th></tr></thead>
 				<tbody>
 					{%- for u in dls %}
 					<tr><td>{{ u[0] }}</td><td>{{ u[1] }}</td><td>{{ u[2] }}</td><td>{{ u[3] }}</td><td>{{ u[4] }}</td><td>{{ u[5] }}</td><td><a href="{{ r }}{{ u[6] }}">{{ u[7]|e }}</a></td><td>{{ u[8] }}</td></tr>
@@ -64,7 +64,7 @@
 		<h1>admin panel:</h1>
 		<table><tr><td> <!-- hehehe -->
 			<table class="num">
-				<tr><td>scanning</td><td>{{ scanning }}</td></tr>
+				<tr><td>Scanning</td><td>{{ scanning }}</td></tr>
 				<tr><td>hash-q</td><td>{{ hashq }}</td></tr>
 				<tr><td>tag-q</td><td>{{ tagq }}</td></tr>
 				<tr><td>mtp-q</td><td>{{ mtpq }}</td></tr>
@@ -72,19 +72,19 @@
 			</table>
 		</td><td>
 			<table class="vols">
-				<thead><tr><th>vol</th><th id="t">action</th><th>status</th></tr></thead>
+				<thead><tr><th>Vol</th><th id="t">Action</th><th>Status</th></tr></thead>
 				<tbody>
 					{%- for mp in avol %}
 					{%- if mp in vstate and vstate[mp] %}
-					<tr><td><a href="{{ r }}{{ mp }}{{ url_suf }}">{{ mp }}</a></td><td><a class="s" href="{{ r }}{{ mp }}?scan">rescan</a></td><td>{{ vstate[mp] }}</td></tr>
+					<tr><td><a href="{{ r }}{{ mp }}{{ url_suf }}">{{ mp }}</a></td><td><a class="s" href="{{ r }}{{ mp }}?scan">Rescan</a></td><td>{{ vstate[mp] }}</td></tr>
 					{%- endif %}
 					{%- endfor %}
 				</tbody>
 			</table>
 		</td></tr></table>
 		<div class="btns">
-			<a id="d" href="{{ r }}/?stack">dump stack</a>
-			<a id="e" href="{{ r }}/?reload=cfg">reload cfg</a>
+			<a id="d" href="{{ r }}/?stack">Dump Stack</a>
+			<a id="e" href="{{ r }}/?reload=cfg">Reload Config</a>
 		</div>
 		{%- endif %}
 
@@ -115,7 +115,7 @@
 				<input type="hidden" name="uhash" id="uhash" value="x" />
 				<input type="submit" id="ls" value="Unlock" />
 				{%- if ahttps %}
-				<a id="w" href="{{ ahttps }}">switch to https</a>
+				<a id="w" href="{{ ahttps }}">Switch to HTTPS</a>
 				{%- endif %}
 				<div id="lm"></div>
 			</form>
@@ -143,12 +143,12 @@
 				<input type="password" id="lp" name="cppwd" placeholder=" password" />
 				{%- endif %}
 				<input type="hidden" name="uhash" id="uhash" value="x" />
-				<input type="submit" id="ls" value="login" />
+				<input type="submit" id="ls" value="Login" />
 				{%- if chpw %}
-				<a id="x" href="#">change password</a>
+				<a id="x" href="#">Change Password</a>
 				{%- endif %}
 				{%- if ahttps %}
-				<a id="w" href="{{ ahttps }}">switch to https</a>
+				<a id="w" href="{{ ahttps }}">Switch to HTTPS</a>
 				{%- endif %}
 				<div id="lm"></div>
 			</form>
@@ -159,20 +159,20 @@
 		<h1 id="cc">other stuff:</h1>
 		<div class="agr">
 			{%- if ahttps %}
-			<a id="wb" href="{{ ahttps }}">switch to https</a><br />
+			<a id="wb" href="{{ ahttps }}">Switch to HTTPS</a><br />
 			{%- endif %}
 
-			<a id="af" href="{{ r }}/?ru">show recent uploads</a><br />
+			<a id="af" href="{{ r }}/?ru">Show Recent Uploads</a><br />
 
 			{%- if this.uname != '*' and this.args.shr %}
-			<a id="y" href="{{ r }}/?shares">edit shares</a><br />
+			<a id="y" href="{{ r }}/?shares">Edit Shares</a><br />
 			{%- endif %}
 
             {%- if this.uname in this.args.idp_adm_set %}
-			<a id="ag" href="{{ r }}/?idp">view idp cache</a><br />
+			<a id="ag" href="{{ r }}/?idp">View IdP Cache</a><br />
 			{%- endif %}
 
-			<a id="k" href="{{ r }}/?reset" class="r">reset client settings</a><br />
+			<a id="k" href="{{ r }}/?reset" class="r">Reset Client Settings</a><br />
 
 			{%- if this.uname != '*' and not in_shr %}
 			<form method="post" enctype="multipart/form-data">
@@ -202,7 +202,6 @@
 		</ul>
 
 	</div>
-	<a href="#" id="repl">π</a>
 	{%- if not this.args.nb %}
 	<span id="pb"><span>powered by</span> <a href="{{ this.args.pb_url }}">copyparty {{ver}}</a></span>
 	{%- endif %}

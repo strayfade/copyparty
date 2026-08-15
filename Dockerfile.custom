@@ -1,0 +1,11 @@
+FROM docker.io/copyparty/ac:latest
+
+COPY copyparty/web/ /tmp/custom/web/
+COPY copyparty/ico.py copyparty/httpcli.py /tmp/custom/
+
+RUN set -e; \
+    pkg=$(python3 -c "import copyparty, os; print(os.path.dirname(copyparty.__file__))"); \
+    rm -f "$pkg"/web/*.gz; \
+    cp -rf /tmp/custom/web/* "$pkg/web/"; \
+    cp -f /tmp/custom/ico.py /tmp/custom/httpcli.py "$pkg/"; \
+    rm -rf /tmp/custom

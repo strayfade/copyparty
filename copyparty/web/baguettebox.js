@@ -328,7 +328,7 @@ window.baguetteBox = (function () {
                 '<button id="bbox-rotl" type="button">↶</button>' +
                 '<button id="bbox-rotr" type="button">↷</button>' +
                 '<button id="bbox-tsel" type="button">sel</button>' +
-                '<button id="bbox-full" type="button" tt="full-screen">⛶</button>' +
+                '<button id="bbox-full" type="button" tt="full-screen"><span class="mi">fullscreen</span></button>' +
                 '<button id="bbzoom" type="button" tt="zoom/stretch">z</button>' +
                 '<button id="bbox-vmode" type="button" tt="a"></button>' +
                 '<button id="bbox-gopage" type="button" tt="go to page">pg</button>' +
@@ -745,7 +745,7 @@ window.baguetteBox = (function () {
         }
 
         var an = options.animation = sread('ganim', anims) || anims[ANIM ? 0 : 2];
-        btnAnim.textContent = ['⇄', '⮺', '⚡'][anims.indexOf(an)];
+        btnAnim.innerHTML = ['<span class="mi">swap_horiz</span>', '<span class="mi">opacity</span>', '<span class="mi">bolt</span>'][anims.indexOf(an)];
         btnAnim.setAttribute('tt', 'animation: ' + an);
 
         options.readDirRtl = sread('greaddir') === "rtl";

@@ -1,7 +1,8 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Atkinson+Hyperlegible+Mono:wght@200..800&family=Material+Icons&display=swap');
 :root {
-	--font-main: sans-serif;
+	--font-main: 'Geist';
 	--font-serif: serif;
-	--font-mono: 'scp';
+	--font-mono: 'Atkinson Hyperlegible Mono';
 
 	--fg: #ccc;
 	--fg-max: #fff;
@@ -37,7 +38,6 @@ html {
 	background: #333;
 	background: var(--bg-u2);
 	border: 0 solid #777;
-	box-shadow: 0 .2em .5em #111;
 	border-radius: .4em;
 	z-index: 9001;
 }
@@ -196,7 +196,6 @@ html {
 #tt.b {
 	padding: 0 2em;
 	border-radius: .5em;
-	box-shadow: 0 .2em 1em #000;
 }
 #tt.show {
 	padding: 1em 1.3em;
@@ -230,7 +229,6 @@ html.bz #tt {
 }
 html.y #tt,
 html.y #toast {
-	box-shadow: 0 .3em 1em rgba(0,0,0,0.4);
 }
 #modalc code {
 	color: #060;
@@ -254,7 +252,6 @@ html.y #tth {
 	margin-left: -20.2em;
 	border-radius: .4em;
 	border: .4em solid var(--fg);
-	box-shadow: 0 2em 4em 1em var(--bg-max);
 }
 #hkhelp,
 #modal {
@@ -286,7 +283,6 @@ html.y #tth {
 	margin: 3em;
 	padding: 1em 1.1em;
 	border-radius: .6em;
-    box-shadow: 0 .3em 3em rgba(0,0,0,0.5);
 	max-width: 50em;
 	max-height: 30em;
 	overflow-x: auto;
@@ -367,19 +363,10 @@ html.y #tth {
 #repl_pre {
 	max-width: 24em;
 }
-*:focus,
-*:focus+label,
-#pctl *:focus,
-.btn:focus {
-	box-shadow: 0 .1em .2em #fc0 inset;
-	outline: #fc0 solid .1em;
-	border-radius: .2em;
-}
 html.y *:focus,
 html.y *:focus+label,
 html.y #pctl *:focus,
 html.y .btn:focus {
-	box-shadow: 0 .1em .2em #037 inset;
 	outline: #037 solid .1em;
 }
 input, button {
@@ -391,12 +378,10 @@ input[type="submit"] {
 input[type="text"]:focus,
 input:not([type]):focus,
 textarea:focus {
-	box-shadow: 0 .1em .3em #fc0, 0 -.1em .3em #fc0;
 }
 html.y input[type="text"]:focus,
 html.y input:not([type]):focus,
 html.y textarea:focus {
-	box-shadow: 0 .1em .3em #037, 0 -.1em .3em #037;
 }
 
 

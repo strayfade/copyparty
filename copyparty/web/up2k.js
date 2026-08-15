@@ -916,7 +916,7 @@ function up2k_init(subtle) {
     bcfg_bind(uc, 'upsfx', 'upsfx', false, set_upsfx);
 
     uc.ow = parseInt(sread('u2ow', ['0', '1', '2', '3']) || u2ow);
-    uc.owt = ['🛡️', '🕒', '♻️', '⏭️'];
+    uc.owt = ['Never Overwrite', 'Overwrite If Newer', 'Always Overwrite', 'Skip Existing'];
     function set_ow() {
         QS('label[for="u2ow"]').innerHTML = uc.owt[uc.ow];
         ebi('u2ow').checked  = true; //cosmetic
@@ -1561,7 +1561,7 @@ function up2k_init(subtle) {
             pvis.addfile([
                 uc.fsearch ? esc(entry.name) : linksplit(
                     entry.purl + uricom_enc(entry.name), window.up_site).join(' / '),
-                '📐 ' + L.u_hashing,
+                '<span class="mi">tag</span> ' + L.u_hashing,
                 ''
             ], entry.size, draw_each);
 
@@ -2261,7 +2261,7 @@ function up2k_init(subtle) {
                 t.t_hashed = Date.now();
 
                 pvis.seth(t.n, 2, L.u_hashdone);
-                pvis.seth(t.n, 1, '📦 wait');
+                pvis.seth(t.n, 1, '<span class="mi">hourglass_empty</span> wait');
                 apop(st.busy.hash, t);
                 st.todo.handshake.push(t);
                 tasker();
@@ -2438,7 +2438,7 @@ function up2k_init(subtle) {
                 t.t_hashed = Date.now();
 
                 pvis.seth(t.n, 2, L.u_hashdone);
-                pvis.seth(t.n, 1, '📦 wait');
+                pvis.seth(t.n, 1, '<span class="mi">hourglass_empty</span> wait');
                 apop(st.busy.hash, t);
                 st.todo.handshake.push(t);
                 tasker();
@@ -2890,7 +2890,7 @@ function up2k_init(subtle) {
         if (!t.t_uploading)
             t.t_uploading = Date.now();
 
-        pvis.seth(t.n, 1, "🚀 " + L.ul_send);
+        pvis.seth(t.n, 1, "<span class='mi'>rocket_launch</span> " + L.ul_send);
 
         var chunksize = get_chunksize(t.size),
             car = pcar * chunksize,
@@ -3058,34 +3058,6 @@ function up2k_init(subtle) {
     ////
     ///   config ui
     //
-
-    function onresize(e) {
-        // 10x faster than matchMedia('(min-width
-        var bar = ebi('ops'),
-            wpx = window.innerWidth,
-            fpx = parseInt(getComputedStyle(bar)['font-size']),
-            wem = wpx * 1.0 / fpx,
-            wide = wem > 57 ? 'w' : '',
-            parent = ebi(wide ? 'u2btn_cw' : 'u2btn_ct'),
-            btn = ebi('u2btn');
-
-        if (btn.parentNode !== parent) {
-            parent.appendChild(btn);
-            ebi('u2conf').className = ebi('u2cards').className = ebi('u2etaw').className = wide;
-        }
-
-        wide = wem > 86 ? 'ww' : wide;
-        parent = ebi(wide == 'ww' ? 'u2c3w' : 'u2c3t');
-        var its = [ebi('u2etaw'), ebi('u2cards')];
-        if (its[0].parentNode !== parent) {
-            ebi('u2conf').className = wide;
-            for (var a = 0; a < 2; a++) {
-                parent.appendChild(its[a]);
-                its[a].className = wide;
-            }
-        }
-    }
-    onresize100.add(onresize, true);
 
     if (MOBILE) {
         // android-chrome wobbles for a bit; firefox / iOS-safari are OK
@@ -3323,13 +3295,12 @@ function up2k_init(subtle) {
                 bcfg_upd_ui('fsearch', uc.fsearch = new_state);
 
         try {
-            clmod(ebi('u2c3w'), 's', !can_write);
             QS('label[for="fsearch"]').style.display = QS('#fsearch').style.display = fixed ? 'none' : '';
         }
         catch (ex) { }
 
         try {
-            var ico = uc.fsearch ? '🔎' : '🚀',
+            var ico = uc.fsearch ? '<span class="mi">search</span>' : '<span class="mi">rocket_launch</span>',
                 desc = uc.fsearch ? L.ul_btns : L.ul_btnu;
 
             clmod(ebi('op_up2k'), 'srch', uc.fsearch);
@@ -3348,7 +3319,6 @@ function up2k_init(subtle) {
 
         draw_turbo();
         draw_life();
-        onresize();
     }
 
     function apply_flag_cfg() {
