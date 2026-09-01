@@ -31,6 +31,39 @@ if (1)
 			"hz": "Sample rate",
 		},
 
+		"hcols": {
+			".files": "File Count",
+			"up_by": "Uploaded by",
+			"up_ip": "IP",
+			".up_at": "Uploaded At",
+			"w": "Checksum",
+			"circle": "Circle",
+			"album": "Album",
+			".tn": "Track",
+			"artist": "Artist",
+			"title": "Title",
+			"tdate": "Release Date",
+			".bpm": "BPM",
+			"key": "Key",
+			".dur": "Duration",
+			".q": "Quality",
+			".vq": "Video Quality",
+			".aq": "Audio Quality",
+			"vc": "Video Codec",
+			"ac": "Audio Codec",
+			"fmt": "Format",
+			"res": "Resolution",
+			".fps": "FPS",
+			"ahash": "Audio Hash",
+			"vhash": "Video Hash",
+			"pixfmt": "Pixel Format",
+			"resw": "Width",
+			"resh": "Height",
+			"chs": "Channels",
+			"hz": "Sample Rate",
+			"descript.ion": "Description",
+		},
+
 		"hks": [
 			[
 				"Misc",
@@ -8126,11 +8159,14 @@ function tr2id(tr) {
 function find_file_col(txt) {
 	var i = -1,
 		min = false,
-		tds = ebi('files').tHead.getElementsByTagName('th');
+		tds = ebi('files').tHead.getElementsByTagName('th'),
+		ltxt = txt.toLowerCase();
 
 	for (var a = 0; a < tds.length; a++) {
-		var spans = tds[a].getElementsByTagName('span');
-		if (spans.length && spans[0].textContent == txt) {
+		var spans = tds[a].getElementsByTagName('span'),
+			nm = (tds[a].getAttribute('name') || '').toLowerCase();
+		if ((spans.length && spans[0].textContent.toLowerCase() == ltxt) ||
+			(nm && (nm == ltxt || nm == 'tags/' + ltxt || nm == 'tags/.' + ltxt))) {
 			min = (tds[a].className || '').indexOf('min') !== -1;
 			i = a;
 			break;
@@ -8153,15 +8189,27 @@ function mk_files_header(taglist) {
 	];
 	for (var a = 0; a < taglist.length; a++) {
 		var tag = taglist[a],
-			c1 = tag.slice(0, 1).toUpperCase();
+			disp = (L.hcols && L.hcols[tag]) || (Ls.eng.hcols && Ls.eng.hcols[tag]) || null,
+			is_int = tag.charAt(0) == '.';
 
-		tag = esc(c1 + tag.slice(1));
-		if (c1 == '.')
-			tag = '<th name="tags/' + tag + '" sort="int"><span>' + tag.slice(1);
+		if (!disp) {
+			var raw = tag.charAt(0) == '.' ? tag.slice(1) : tag;
+			raw = raw.replace(/[_-]+/g, ' ');
+			raw = raw.replace(/\b\w+/g, function (w) {
+				return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+			});
+			if (/^(Ip|Bpm|Fps)$/.test(raw))
+				raw = raw.toUpperCase();
+			disp = raw;
+		}
+		disp = esc(disp);
+		var attr = esc(tag);
+		if (is_int)
+			disp = '<th name="tags/' + attr + '" sort="int"><span>' + disp;
 		else
-			tag = '<th name="tags/' + tag + '"><span>' + tag;
+			disp = '<th name="tags/' + attr + '"><span>' + disp;
 
-		html.push(tag + '</span></th>');
+		html.push(disp + '</span></th>');
 	}
 	html = html.concat([
 		'<th name="ext"><span>Type</span></th>',
@@ -8181,9 +8229,37 @@ var filecols = (function () {
 		for (var a = 0, aa = ths.length; a < aa; a++) {
 			var th = ths[a].parentElement,
 				toh = ths[a].outerHTML, // !ff10
-				ttv = L.cols[ths[a].textContent];
+				nm = th.getAttribute('name') || '',
+				ckey = nm.indexOf('tags/') === 0 ? nm.slice(5) : nm,
+				ttv = null;
 
-			ttv = (ttv ? ttv + '; ' : '') + 'id=<code>' + th.getAttribute('name') + '</code>';
+			if (ckey) {
+				// try exact, lower, and capitalized variants in current language then eng
+				var tryKeys = [ckey, ckey.toLowerCase(), ckey.charAt(0).toUpperCase() + ckey.slice(1)];
+				for (var k = 0; k < tryKeys.length; k++) {
+					if (L.cols && L.cols[tryKeys[k]]) { ttv = L.cols[tryKeys[k]]; break; }
+				}
+				if (!ttv && Ls.eng.cols) {
+					for (var k = 0; k < tryKeys.length; k++) {
+						if (Ls.eng.cols[tryKeys[k]]) { ttv = Ls.eng.cols[tryKeys[k]]; break; }
+					}
+				}
+				// also check stripped dot version
+				if (!ttv) {
+					var ckey2 = ckey.replace(/^\./, '');
+					var tryKeys2 = [ckey2, ckey2.toLowerCase(), ckey2.charAt(0).toUpperCase() + ckey2.slice(1)];
+					for (var k = 0; k < tryKeys2.length; k++) {
+						if (L.cols && L.cols[tryKeys2[k]]) { ttv = L.cols[tryKeys2[k]]; break; }
+					}
+					if (!ttv && Ls.eng.cols) {
+						for (var k = 0; k < tryKeys2.length; k++) {
+							if (Ls.eng.cols[tryKeys2[k]]) { ttv = Ls.eng.cols[tryKeys2[k]]; break; }
+						}
+					}
+				}
+			}
+
+			ttv = (ttv ? ttv + '; ' : '') + 'id=<code>' + nm + '</code>';
 			if (!MOBILE && toh) {
 				th.innerHTML = '<div class="cfg"><a href="#">-</a></div>' + toh;
 				th.getElementsByTagName('a')[0].onclick = ev_row_tgl;

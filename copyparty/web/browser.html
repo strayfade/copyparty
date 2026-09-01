@@ -88,6 +88,38 @@
 
 	<div id="pro" class="logue">{{ "" if sb_lg else logues[0] }}</div>
 
+	{%- set hdr = {
+		".files": "File Count",
+		"up_by": "Uploaded by",
+		"up_ip": "IP",
+		".up_at": "Uploaded At",
+		"w": "Checksum",
+		"circle": "Circle",
+		"album": "Album",
+		".tn": "Track",
+		"artist": "Artist",
+		"title": "Title",
+		"tdate": "Release Date",
+		".bpm": "BPM",
+		"key": "Key",
+		".dur": "Duration",
+		".q": "Quality",
+		".vq": "Video Quality",
+		".aq": "Audio Quality",
+		"vc": "Video Codec",
+		"ac": "Audio Codec",
+		"fmt": "Format",
+		"res": "Resolution",
+		".fps": "FPS",
+		"ahash": "Audio Hash",
+		"vhash": "Video Hash",
+		"pixfmt": "Pixel Format",
+		"resw": "Width",
+		"resh": "Height",
+		"chs": "Channels",
+		"hz": "Sample Rate",
+		"descript.ion": "Description"
+	} %}
 	<table id="files">
 		<thead>
 			<tr>
@@ -95,13 +127,24 @@
 				<th name="href"><span>File Name</span></th>
 				<th name="sz" sort="int"><span>Size</span></th>
 				{%- for k in taglist %}
+					{%- set pretty = hdr.get(k) %}
+					{%- if not pretty %}
+						{%- if k.startswith('.') %}
+							{%- set pretty = k[1:]|replace('_',' ')|replace('-',' ')|title %}
+						{%- else %}
+							{%- set pretty = k|replace('_',' ')|replace('-',' ')|title %}
+						{%- endif %}
+						{%- if pretty in ["Ip", "Bpm", "Fps"] %}
+							{%- set pretty = pretty|upper %}
+						{%- endif %}
+					{%- endif %}
 					{%- if k.startswith('.') %}
-				<th name="tags/{{ k }}" sort="int"><span>{{ k[1:] }}</span></th>
+				<th name="tags/{{ k }}" sort="int"><span>{{ pretty }}</span></th>
 					{%- else %}
-				<th name="tags/{{ k }}"><span>{{ k[0]|upper }}{{ k[1:] }}</span></th>
+				<th name="tags/{{ k }}"><span>{{ pretty }}</span></th>
 					{%- endif %}
 				{%- endfor %}
-				<th name="ext"><span>T</span></th>
+				<th name="ext"><span>Type</span></th>
 				<th name="ts"><span>Date</span></th>
 			</tr>
 		</thead>
