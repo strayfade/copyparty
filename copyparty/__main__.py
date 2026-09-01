@@ -1248,6 +1248,7 @@ def add_general(ap, nc, srvname):
     ap2.add_argument("--vc-age", metavar="HOURS", type=int, default=3, help="how many hours to wait between vulnerability checks")
     ap2.add_argument("--vc-sev", metavar="LEVEL", type=u, default="low", help="minimum severity to care about; one of these: \033[32mlow medium high critical\033[0m")
     ap2.add_argument("--vc-exit", action="store_true", help="panic and exit if current version is vulnerable")
+    ap2.add_argument("--enc", action="store_true", help="enable folder encryption support (volflag=enc)")
     ap2.add_argument("--license", action="store_true", help="show licenses and exit")
     ap2.add_argument("--version", action="store_true", help="show versions and exit")
     ap2.add_argument("--versionb", action="store_true", help="show version and exit")

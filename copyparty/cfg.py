@@ -83,6 +83,7 @@ def vf_bmap() -> dict[str, str]:
         "xlink",
         "xvol",
         "zipmaxu",
+        "enc",
     ):
         ret[k] = k
     return ret
@@ -461,6 +462,10 @@ flagcats = {
         "assert_root": "crash on startup if volume's folder not exist",
         "davauth": "ask webdav clients to login for all folders",
         "davrt": "show lastmod time of symlink destination, not the link itself\n(note: this option is always enabled for recursive listings)",
+        "enc": "enable folder encryption support (AES-256-GCM, quantum-secure)",
+    },
+    "encryption": {
+        "enc": "enable folder encryption support",
     },
 }
 

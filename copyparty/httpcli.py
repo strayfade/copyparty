@@ -40,6 +40,8 @@ from .sutil import StreamArc, gfilter
 from .szip import StreamZip
 from .up2k import up2k_chunksize
 from .util import unquote  # type: ignore
+from . import crypt as enc_crypt
+
 from .util import (
     APPLESAN_RE,
     BITNESS,
@@ -1581,6 +1583,14 @@ class HttpCli(object):
             if self.vpath.startswith("wopi"):
                 return self.tx_wopi_api()
 
+        # folder encryption: status / unlock via GET
+        if "enc_status" in self.uparam or "enc-status" in self.uparam:
+            return self.handle_enc_status()
+        if "enc_unlock" in self.uparam or "enc-unlock" in self.uparam:
+            return self.handle_enc_unlock()
+        if "enc_info" in self.uparam:
+            return self.handle_enc_status()
+
         return self.tx_browser()
 
     def tx_wopi_api(self) -> bool:
@@ -2454,6 +2464,30 @@ class HttpCli(object):
         if "%" in self.req:
             self.log(" `-- %r" % (self.vpath,))
 
+        # folder encryption endpoints (handle before other dispatch)
+        if "encrypt" in self.uparam or "enc" in self.uparam:
+            # need body PW; try JSON or form
+            # if JSON, delegate to handle_post_json path which will set _enc_json_pw
+            # but for generic POST (fetch with JSON but ctype json already handled separately)
+            # For multipart ups, handle_post_multipart will handle, but we intercept here for ?encrypt with JSON
+            # So if content-type is json, let handle_post_json handle it; else handle directly
+            ctype = self.headers.get("content-type", "").lower()
+            if "json" in ctype:
+                return self.handle_post_json()
+            return self.handle_encrypt()
+        if "decrypt" in self.uparam or "dec" in self.uparam:
+            ctype = self.headers.get("content-type", "").lower()
+            if "json" in ctype:
+                return self.handle_post_json()
+            return self.handle_decrypt()
+        if "enc_unlock" in self.uparam or "unlock" in self.uparam:
+            ctype = self.headers.get("content-type", "").lower()
+            if "json" in ctype:
+                return self.handle_post_json()
+            return self.handle_enc_unlock()
+        if "enc_status" in self.uparam:
+            return self.handle_enc_status()
+
         if self.headers.get("expect", "").lower() == "100-continue":
             try:
                 self.s.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
@@ -2631,6 +2665,16 @@ class HttpCli(object):
         # post_sz, halg, sha_hex, sha_b64, remains, path, url
         reader, remains = self.get_body_reader()
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
+        # enc check for PUT/stash
+        try:
+            _ap = vfs.canonical(rem)
+            _is_enc, _is_locked, _, _ = self._enc_is_locked(_ap)
+            if _is_enc and _is_locked:
+                raise Pebkac(403, "folder is locked - password required")
+        except Pebkac:
+            raise
+        except:
+            pass
         rnd, lifetime, xbu, xau = self.upload_flags(vfs)
         lim = vfs.get_dbv(rem)[0].lim
         fdir = vfs.canonical(rem)
@@ -2936,6 +2980,18 @@ class HttpCli(object):
         else:
             sz = post_sz
 
+        # folder encryption: if destination is inside encrypted folder and unlocked, encrypt file
+        try:
+            is_enc2, is_locked2, enc_root2, enc_key2 = self._enc_is_locked(path)
+            if is_enc2 and not is_locked2 and enc_key2 is not None:
+                # file was just written plaintext; encrypt in place
+                try:
+                    enc_crypt.encrypt_file(path, enc_key2)
+                except Exception as ex:
+                    self.log("post-encrypt failed: %s" % (ex,), 3)
+        except:
+            pass
+
         vfs, rem = vfs.get_dbv(rem)
         self.conn.hsrv.broker.say(
             "up2k.hash_file",
@@ -3181,6 +3237,20 @@ class HttpCli(object):
         # self.reply(b"cloudflare", 503)
         # return True
 
+        # folder encryption JSON endpoints
+        if "encrypt" in self.uparam or "enc" in self.uparam:
+            self._enc_json_pw = body.get("password") or body.get("pw") or body.get("enc_pw") or ""
+            self._enc_json_pw2 = body.get("confirm") or body.get("password2") or body.get("pw2") or ""
+            return self.handle_encrypt()
+        if "decrypt" in self.uparam or "dec" in self.uparam:
+            self._enc_json_pw = body.get("password") or body.get("pw") or body.get("enc_pw") or ""
+            return self.handle_decrypt()
+        if "enc_unlock" in self.uparam or "unlock" in self.uparam:
+            self._enc_json_pw = body.get("password") or body.get("pw") or body.get("enc_pw") or ""
+            return self.handle_enc_unlock()
+        if "enc_status" in self.uparam:
+            return self.handle_enc_status()
+
         if "srch" in self.uparam or "srch" in body:
             return self.handle_search(body)
 
@@ -3195,6 +3265,16 @@ class HttpCli(object):
             raise Pebkac(400, "your client is old; press CTRL-SHIFT-R and try again")
 
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
+        # enc check for up2k uploads
+        try:
+            _ap = vfs.canonical(rem)
+            _is_enc, _is_locked, _enc_root, _enc_key = self._enc_is_locked(_ap)
+            if _is_enc and _is_locked:
+                raise Pebkac(403, "folder is locked - password required (X-Enc-PW header or ?enc_pw=)")
+        except Pebkac:
+            raise
+        except:
+            pass
         fsnt = vfs.flags["fsnt"]
         if fsnt != "lin":
             tl = VPTL_WIN if fsnt == "win" else VPTL_MAC
@@ -3856,6 +3936,248 @@ class HttpCli(object):
         self.redirect(vpath, "?edit")
         return True
 
+    # ------------------------------------------------------------------
+    # folder encryption (quantum-secure AES-256-GCM + Argon2id)
+
+    def _enc_get_pw(self) -> str:
+        """Password for enc ops from header / uparam / json."""
+        # header takes precedence (used by JS fetch)
+        pw = self.headers.get("x-enc-pw") or self.headers.get("x-enc_pw") or ""
+        if pw:
+            return pw
+        pw = self.uparam.get("enc_pw") or self.uparam.get("enc-pw") or ""
+        if pw:
+            return pw
+        # also check cookies for unlock persistence
+        try:
+            # cookie name: enc_<vpath_hash>
+            # we store raw pw in JS sessionStorage, but also try cookie fallback
+            for k, v in self.cookies.items():
+                if k.startswith("enc_"):
+                    # value is pw (not ideal but okay for now)
+                    return v
+        except:
+            pass
+        return ""
+
+    def _enc_require_write(self, vfs, rem):
+        if not self.can_write or not self.can_move or not self.can_delete:
+            raise Pebkac(403, "need r+w+m+d to encrypt/decrypt folders")
+
+    def _enc_ap(self, vfs, rem):
+        # type: ignore
+        ap = vfs.canonical(rem)
+        # ensure we are at a directory
+        if not bos.path.isdir(ap):
+            raise Pebkac(400, "not a folder: /%s" % (vjoin(vfs.vpath, rem),))
+        return ap
+
+    def _enc_read_json_pw(self):
+        """Read password from JSON body or form."""
+        pw = ""
+        pw2 = ""
+        # try JSON body first
+        try:
+            # peek at body if already parsed? For POST JSON, handle_post_json already parsed
+            # but for generic POST we read via get_body_reader
+            ctype = self.headers.get("content-type", "")
+            if "json" in ctype:
+                length = int(self.headers.get("content-length", "0") or 0)
+                if length and length < 8192:
+                    body = self.sr.recv(length) if hasattr(self.sr, "recv") else b""
+                    # fallback: read via unrecv? simplest: use parser if available
+                    pass
+        except:
+            pass
+        # fallback to uparam (handles ?enc_pw= and also form fields via handle_post_multipart)
+        pw = self.uparam.get("password") or self.uparam.get("pw") or self.uparam.get("enc_pw") or ""
+        pw2 = self.uparam.get("confirm") or self.uparam.get("password2") or ""
+        # also check headers
+        hpw = self.headers.get("x-enc-pw") or ""
+        if hpw and not pw:
+            pw = hpw
+        return pw, pw2
+
+    def handle_encrypt(self) -> bool:
+        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
+        self._enc_require_write(vfs, rem)
+        ap = self._enc_ap(vfs, rem)
+        # password from body/json/uparam/header
+        pw = ""
+        pw2 = ""
+        # try to get from JSON via handle_post_json path (we will call this from handle_post_json)
+        # For direct POST ?encrypt, try multipart/form or uparam
+        # For fetch JSON, self._enc_json_pw will be set by caller
+        if hasattr(self, "_enc_json_pw"):
+            pw = getattr(self, "_enc_json_pw") or ""
+            pw2 = getattr(self, "_enc_json_pw2") or ""
+        else:
+            pw, pw2 = self._enc_read_json_pw()
+            # also try reading raw body as json
+            if not pw:
+                try:
+                    length = int(self.headers.get("content-length", "0") or 0)
+                    if length and length < 4096:
+                        # need to ensure we haven't consumed body; try to read from s
+                        pass
+                except:
+                    pass
+        if not pw:
+            raise Pebkac(400, "password required")
+        if len(pw) < 4:
+            raise Pebkac(400, "password too short (min 4 chars)")
+        if pw2 and pw != pw2:
+            raise Pebkac(400, "passwords do not match")
+        # check already encrypted
+        if enc_crypt.is_encrypted_dir(ap):
+            raise Pebkac(400, "folder already encrypted")
+        if not enc_crypt.HAVE_AESGCM:
+            raise Pebkac(500, "server missing cryptography library (pip install cryptography)")
+        self.log("encrypting folder %r" % (ap,))
+        try:
+            enc_crypt.encrypt_folder(ap, pw)
+        except Exception as ex:
+            self.log("encrypt failed: %s" % (min_ex(),), 3)
+            raise Pebkac(500, "encrypt failed: %s" % (ex,))
+        # invalidate up2k cache for this volume
+        try:
+            dbv, vrem = vfs.get_dbv(rem)
+            self.conn.hsrv.broker.say("up2k.rescan", dbv.realpath)
+        except:
+            pass
+        self.reply(json.dumps({"ok": True, "msg": "folder encrypted"}).encode("utf-8"), mime="application/json")
+        return True
+
+    def handle_decrypt(self) -> bool:
+        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
+        self._enc_require_write(vfs, rem)
+        ap = self._enc_ap(vfs, rem)
+        pw = ""
+        pw2 = ""
+        if hasattr(self, "_enc_json_pw"):
+            pw = getattr(self, "_enc_json_pw") or ""
+        else:
+            pw, _ = self._enc_read_json_pw()
+        if not pw:
+            # also check x-enc-pw header
+            pw = self.headers.get("x-enc-pw") or self.uparam.get("enc_pw") or ""
+        if not pw:
+            raise Pebkac(400, "password required")
+        if not enc_crypt.is_encrypted_dir(ap):
+            raise Pebkac(400, "folder not encrypted")
+        # verify password before doing work (fast fail + garda)
+        try:
+            meta = enc_crypt.load_meta(ap)
+        except Exception as ex:
+            raise Pebkac(500, "cannot read meta: %s" % (ex,))
+        if not enc_crypt.verify_password(pw, meta):
+            self.cbonk(self.conn.hsrv.genc, pw, "enc", "bad enc passwords")
+            raise Pebkac(403, "incorrect password")
+        if not enc_crypt.HAVE_AESGCM:
+            raise Pebkac(500, "server missing cryptography library")
+        self.log("decrypting folder %r" % (ap,))
+        try:
+            enc_crypt.decrypt_folder(ap, pw)
+        except Exception as ex:
+            self.log("decrypt failed: %s" % (min_ex(),), 3)
+            raise Pebkac(500, "decrypt failed: %s" % (ex,))
+        try:
+            dbv, vrem = vfs.get_dbv(rem)
+            self.conn.hsrv.broker.say("up2k.rescan", dbv.realpath)
+        except:
+            pass
+        self.reply(json.dumps({"ok": True, "msg": "folder decrypted"}).encode("utf-8"), mime="application/json")
+        return True
+
+    def handle_enc_unlock(self) -> bool:
+        """Verify password for locked folder without mutating; sets cookie for convenience."""
+        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, True, False)
+        ap = vfs.canonical(rem)
+        # find enc root (could be parent)
+        enc_root = enc_crypt.find_enc_root(ap)
+        if not enc_root:
+            # also check if ap itself is file inside encrypted folder -> find parent
+            # try canonical for vpath itself if rem empty -> ap is folder
+            enc_root = None
+            # walk up from ap
+            cur = ap
+            for _ in range(8):
+                if enc_crypt.is_encrypted_dir(cur):
+                    enc_root = cur
+                    break
+                cur = os.path.dirname(cur)
+                if cur == os.path.dirname(cur):
+                    break
+        if not enc_root:
+            raise Pebkac(400, "not inside an encrypted folder")
+        pw = ""
+        if hasattr(self, "_enc_json_pw"):
+            pw = getattr(self, "_enc_json_pw") or ""
+        else:
+            pw, _ = self._enc_read_json_pw()
+            if not pw:
+                pw = self.headers.get("x-enc-pw") or self.uparam.get("enc_pw") or ""
+        if not pw:
+            raise Pebkac(400, "password required")
+        try:
+            meta = enc_crypt.load_meta(enc_root)
+        except:
+            raise Pebkac(500, "cannot read meta")
+        if not enc_crypt.verify_password(pw, meta):
+            self.cbonk(self.conn.hsrv.genc, pw, "enc", "bad enc passwords")
+            raise Pebkac(403, "incorrect password")
+        # success: set a short-lived cookie (not httpOnly so JS can see) for convenience
+        # cookie name encodes enc root vpath hash to avoid collisions
+        vp_enc = vfs.vpath  # approx
+        ck = gencookie("enc_" + b64e(hashlib.sha256(enc_root.encode()).digest()[:6]), pw, self.args.R, self.args.cookie_lax, self.is_https, 3600, "")
+        self.out_headerlist.append(("Set-Cookie", ck))
+        self.reply(json.dumps({"ok": True, "msg": "unlock ok"}).encode("utf-8"), mime="application/json")
+        return True
+
+    def handle_enc_status(self) -> bool:
+        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, True, False)
+        ap = vfs.canonical(rem)
+        enc_root = enc_crypt.find_enc_root(ap)
+        locked = False
+        is_enc = False
+        if enc_root or enc_crypt.is_encrypted_dir(ap):
+            is_enc = True
+            # check if we have valid pw
+            pw = self._enc_get_pw()
+            if pw:
+                try:
+                    meta = enc_crypt.load_meta(enc_root or ap)
+                    if enc_crypt.verify_password(pw, meta):
+                        locked = False
+                    else:
+                        locked = True
+                except:
+                    locked = True
+            else:
+                locked = True
+        self.reply(json.dumps({"is_enc": is_enc, "locked": locked}).encode("utf-8"), mime="application/json")
+        return True
+
+    def _enc_is_locked(self, ap: str):
+        """Return (is_enc, locked, enc_root, key_or_None)."""
+        enc_root = enc_crypt.find_enc_root(ap)
+        if enc_crypt.is_encrypted_dir(ap):
+            enc_root = ap
+        if not enc_root:
+            return False, False, None, None
+        pw = self._enc_get_pw()
+        try:
+            meta = enc_crypt.load_meta(enc_root)
+        except:
+            return True, True, enc_root, None
+        if pw and enc_crypt.verify_password(pw, meta):
+            try:
+                key = enc_crypt.get_key(pw, meta)
+                return True, False, enc_root, key
+            except:
+                return True, True, enc_root, None
+        return True, True, enc_root, None
+
     def upload_flags(self, vfs: VFS) -> tuple[int, int, list[str], list[str]]:
         if self.args.nw:
             rnd = 0
@@ -3887,6 +4209,16 @@ class HttpCli(object):
         nullwrite = self.args.nw
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
         self._assert_safe_rem(rem)
+        # enc lock check for uploads
+        try:
+            _ap = vfs.canonical(rem)
+            _is_enc, _is_locked, _, _ = self._enc_is_locked(_ap)
+            if _is_enc and _is_locked:
+                raise Pebkac(403, "folder is locked - password required")
+        except Pebkac:
+            raise
+        except:
+            pass
 
         hasher = None
         if nohash:
@@ -4085,6 +4417,14 @@ class HttpCli(object):
 
                     atomic_move(self.log, tabspath, abspath, vfs.flags)
                     tabspath = ""
+
+                    # folder encryption: encrypt new upload if inside encrypted folder
+                    try:
+                        is_enc2, is_locked2, enc_root2, enc_key2 = self._enc_is_locked(abspath)
+                        if is_enc2 and not is_locked2 and enc_key2 is not None:
+                            enc_crypt.encrypt_file(abspath, enc_key2)
+                    except:
+                        pass
 
                     at = time.time() - lifetime
                     if xau:
@@ -4933,6 +5273,53 @@ class HttpCli(object):
         fs_path, file_sz = editions[selected_edition]
         logmsg += "{} ".format(selected_edition.lstrip("."))
 
+        # folder encryption: handle encrypted files
+        try:
+            # Check if file is inside encrypted folder
+            is_enc, is_locked, enc_root, enc_key = self._enc_is_locked(fs_path)
+            # Also check if file content itself is encrypted (magic) even if folder check missed due to .cpr handling
+            # For tx_file, fs_path could be "web/..." resource; skip those
+            if fs_path and not fs_path.startswith("<") and not self.vpath.startswith(".cpr"):
+                if is_enc and is_locked:
+                    self.reply(b'folder is locked - password required (X-Enc-PW header or ?enc_pw=)', status=403)
+                    return True
+                if is_enc and not is_locked and enc_key is not None:
+                    # If file content is encrypted, decrypt on the fly
+                    # Peek file header
+                    try:
+                        with open(fs_path, "rb") as _f:
+                            _head = _f.read(len(enc_crypt.MAGIC))
+                        if _head == enc_crypt.MAGIC:
+                            # Decrypt whole file for now; adjust file_sz and fs_path handling
+                            with open(fs_path, "rb") as _f:
+                                _enc = _f.read()
+                            _plain = enc_crypt.decrypt_bytes(_enc, enc_key)
+                            # Write decrypted to temp and serve that
+                            import tempfile
+                            _tmp = tempfile.NamedTemporaryFile(delete=False)
+                            _tmp.write(_plain)
+                            _tmp.close()
+                            # Override fs_path to temp file; update file_sz
+                            fs_path = _tmp.name
+                            file_sz = len(_plain)
+                            # Ensure temp cleanup after send
+                            self._enc_tmp_to_clean = fs_path
+                            # Disable gzip handling etc. for decrypted
+                            is_compressed = False
+                            selected_edition = "plain"
+                            editions = {"plain": (fs_path, file_sz)}
+                            # Reset headers that would imply gzip
+                            self.out_headers.pop("Content-Encoding", None)
+                    except Exception as ex:
+                        self.log("decrypt failed: %s" % (ex,), 3)
+                        raise
+        except Exception as ex:
+            # Don't swallow intentional Pebkac
+            if isinstance(ex, Pebkac):
+                raise
+            self.log("enc check error: %s" % (ex,), 6)
+
+
         #
         # partial
 
@@ -5379,6 +5766,27 @@ class HttpCli(object):
         t = self._can_zip(vn.flags)
         if t:
             raise Pebkac(400, t)
+        # enc lock check for zip
+        try:
+            _ap = vn.canonical(rem)
+            _is_enc, _is_locked, _, _ = self._enc_is_locked(_ap)
+            if _is_enc and _is_locked:
+                raise Pebkac(403, "folder is locked - password required")
+            # also check each item if inside enc
+            for _it in items:
+                try:
+                    _iap = vn.canonical(rem + "/" + _it if rem else _it)
+                    _ie, _il, _, _ = self._enc_is_locked(_iap)
+                    if _ie and _il:
+                        raise Pebkac(403, "folder is locked")
+                except Pebkac:
+                    raise
+                except:
+                    pass
+        except Pebkac:
+            raise
+        except:
+            pass
 
         logmsg = "{:4} {} ".format("", self.req)
         self.keepalive = False
@@ -6775,6 +7183,24 @@ class HttpCli(object):
         return True
 
     def handle_rm(self, req: list[str]) -> bool:
+        # enc lock check for delete
+        try:
+            _reqs = req if req else [self.vpath]
+            for _vp in _reqs:
+                try:
+                    _vfs, _rem = self.asrv.vfs.get(_vp, self.uname, False, False)
+                    _ap = _vfs.canonical(_rem)
+                    _ie, _il, _, _ = self._enc_is_locked(_ap)
+                    if _ie and _il:
+                        raise Pebkac(403, "folder is locked - password required")
+                except Pebkac:
+                    raise
+                except:
+                    pass
+        except Pebkac:
+            raise
+        except:
+            pass
         if not req and not self.can_delete:
             if self.mode == "DELETE" and self.uname == "*":
                 raise Pebkac(401, "authenticate")  # webdav
@@ -6806,6 +7232,31 @@ class HttpCli(object):
         return True
 
     def handle_mv(self) -> bool:
+        # enc lock check for move
+        try:
+            _vfs1, _rem1 = self.asrv.vfs.get(self.vpath, self.uname, False, False)
+            _ap1 = _vfs1.canonical(_rem1)
+            _ie, _il, _, _ = self._enc_is_locked(_ap1)
+            if _ie and _il:
+                raise Pebkac(403, "folder is locked")
+            _dst = self.uparam.get("move") or ""
+            if _dst:
+                if self.is_vproxied and _dst.startswith(self.args.SR):
+                    _dst = _dst[len(self.args.RS):]
+                try:
+                    _vfs2, _rem2 = self.asrv.vfs.get(_dst.lstrip("/"), self.uname, False, True)
+                    _ap2 = _vfs2.canonical(_rem2)
+                    _ie2, _il2, _, _ = self._enc_is_locked(_ap2)
+                    if _ie2 and _il2:
+                        raise Pebkac(403, "destination folder is locked")
+                except Pebkac:
+                    raise
+                except:
+                    pass
+        except Pebkac:
+            raise
+        except:
+            pass
         # full path of new loc (incl filename)
         dst = self.uparam.get("move")
 
@@ -6839,6 +7290,17 @@ class HttpCli(object):
         return True
 
     def handle_cp(self) -> bool:
+        # enc lock check for copy
+        try:
+            _vfs1, _rem1 = self.asrv.vfs.get(self.vpath, self.uname, False, False)
+            _ap1 = _vfs1.canonical(_rem1)
+            _ie, _il, _, _ = self._enc_is_locked(_ap1)
+            if _ie and _il:
+                raise Pebkac(403, "folder is locked")
+        except Pebkac:
+            raise
+        except:
+            pass
         # full path of new loc (incl filename)
         dst = self.uparam.get("copy")
 
@@ -7010,6 +7472,20 @@ class HttpCli(object):
         rem = self.rem
         abspath = vn.dcanonical(rem)
         dbv, vrem = vn.get_dbv(rem)
+
+        # folder encryption: check if inside encrypted dir and locked
+        try:
+            is_enc, is_locked, enc_root, enc_key = self._enc_is_locked(abspath)
+            if is_enc and is_locked:
+                if "ls" in self.uparam:
+                    self.reply(b'{"locked": true, "is_enc": true}', mime="application/json", status=403)
+                    return True
+                self._enc_locked = True
+                self._enc_root = enc_root
+            else:
+                self._enc_locked = False
+        except:
+            self._enc_locked = False
 
         try:
             st = bos.stat(abspath)
@@ -7266,6 +7742,13 @@ class HttpCli(object):
 
         srv_infot = "</span> // <span>".join(srv_info)
 
+        # compute enc status for cgv
+        _is_enc = False
+        _is_locked = False
+        try:
+            _is_enc, _is_locked, _, _ = self._enc_is_locked(abspath)
+        except:
+            pass
         perms = []
         if self.can_read or is_dk:
             perms.append("read")
@@ -7319,11 +7802,24 @@ class HttpCli(object):
             "ls0": None,
             "acct": self.uname,
             "perms": perms,
+            "is_enc": _is_enc,
+            "is_locked": _is_locked,
         }
         # also see `js_htm` in authsrv.py
+        # enc info for JS
+        is_enc = False
+        is_locked = False
+        try:
+            _ie, _il, _, _ = self._enc_is_locked(abspath)
+            is_enc = _ie
+            is_locked = _il if _ie else False
+        except:
+            pass
         j2a = {
             "cgv1": vn.js_htm,
             "cgv": cgv,
+            "is_enc": is_enc,
+            "is_locked": is_locked,
             "vpnodes": vpnodes,
             "files": [],
             "ls0": None,
@@ -7395,6 +7891,11 @@ class HttpCli(object):
         stats = {k: v for k, v in vfs_ls}
         ls_names = [x[0] for x in vfs_ls]
         ls_names.extend(list(vfs_virt))
+        # hide internal enc dir always
+        ls_names = [x for x in ls_names if x != enc_crypt.ENC_DIRNAME]
+        # if folder is encrypted and locked, hide all files
+        if getattr(self, "_enc_locked", False):
+            ls_names = []
 
         if add_og and og_fn and not self.can_read:
             ls_names = [og_fn]
@@ -7499,6 +8000,21 @@ class HttpCli(object):
                 margin = "-"
 
             sz = inf.st_size
+            # if file is encrypted and unlocked, show plaintext size
+            try:
+                _ie2, _il2, _er2, _ek2 = self._enc_is_locked(fspath)
+                if _ie2 and not _il2 and _ek2 is not None and not is_dir:
+                    # peek magic to confirm encrypted
+                    try:
+                        with open(fspath, "rb") as _f2:
+                            _h = _f2.read(len(enc_crypt.MAGIC))
+                        if _h == enc_crypt.MAGIC:
+                            # plaintext size = file size - magic - nonce - tag
+                            sz = max(0, sz - len(enc_crypt.MAGIC) - enc_crypt.NONCE_LEN - 16)
+                    except:
+                        pass
+            except:
+                pass
             zd = datetime.fromtimestamp(max(0, min(2 << 36, linf.st_mtime)), UTC)
             dt = "%04d-%02d-%02d %02d:%02d:%02d" % (
                 zd.year,

@@ -48,6 +48,7 @@ classifiers = [
 [project.optional-dependencies]
 all = [
     "argon2-cffi",
+    "cryptography",
     "paramiko",
     "partftpy>=0.4.0",
     "Pillow",
@@ -64,6 +65,7 @@ ftps = ["pyftpdlib", "pyopenssl"]
 tftpd = ["partftpy>=0.4.0"]
 pwhash = ["argon2-cffi"]
 zeromq = ["pyzmq"]
+enc = ["cryptography", "argon2-cffi"]
 
 [project.scripts]
 copyparty = "copyparty.__main__:main"

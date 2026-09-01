@@ -145,7 +145,7 @@ class Cfg(Namespace):
     def __init__(self, a=None, v=None, c=None, **ka0):
         ka = {}
 
-        ex = "allow_flac allow_wav chpw cookie_lax daw dav_auth dav_mac dav_rt dlni dothidden e2d e2ds e2dsa e2t e2ts e2tsr e2v e2vu e2vp early_ban ed emp exp force_js getmod grid gsel hardlink hardlink_only http_no_tcp ih ihead localtime log_badxml magic md_no_br nid nih no_acode no_athumb no_bauth no_clone no_cp no_dav no_db_ip no_del no_dirsz no_dupe no_dupe_m no_fnugg no_html no_lifetime no_logues no_mv no_pipe no_poll no_readme no_robots no_sb_md no_sb_lg no_scandir no_script no_tail no_tarcmp no_thumb no_vthumb no_u2abrt no_zip no_zls nrand nsort nw og og_no_head og_s_title ohead opds q rand re_dirsz reflink rm_partial rmagic rss show_hist smb srch_dbg srch_excl srch_icase stats ui_noacci ui_nocpla ui_noctxb ui_nolbar ui_nombar ui_nonav ui_notree ui_norepl ui_nosrvi uqe usernames vague_403 vc ver vol_nospawn vol_or_crash wo_up_readme wopi write_uplog xdev xlink xvol zipmaxu zs"
+        ex = "allow_flac allow_wav chpw cookie_lax daw dav_auth dav_mac dav_rt dlni dothidden e2d e2ds e2dsa e2t e2ts e2tsr e2v e2vu e2vp early_ban ed emp enc exp force_js getmod grid gsel hardlink hardlink_only http_no_tcp ih ihead localtime log_badxml magic md_no_br nid nih no_acode no_athumb no_bauth no_clone no_cp no_dav no_db_ip no_del no_dirsz no_dupe no_dupe_m no_fnugg no_html no_lifetime no_logues no_mv no_pipe no_poll no_readme no_robots no_sb_md no_sb_lg no_scandir no_script no_tail no_tarcmp no_thumb no_vthumb no_u2abrt no_zip no_zls nrand nsort nw og og_no_head og_s_title ohead opds q rand re_dirsz reflink rm_partial rmagic rss show_hist smb srch_dbg srch_excl srch_icase stats ui_noacci ui_nocpla ui_noctxb ui_nolbar ui_nombar ui_nonav ui_notree ui_norepl ui_nosrvi uqe usernames vague_403 vc ver vol_nospawn vol_or_crash wo_up_readme wopi write_uplog xdev xlink xvol zipmaxu zs"
         ka.update(**{k: False for k in ex.split()})
 
         ex = "dav_inf dedup dotpart dotsrch hook_v no_dhash no_fastboot no_fpool no_htp no_rescan no_sendfile no_ses no_snap no_up_list no_voldump wram re_dhash see_dots plain_ip"
@@ -157,7 +157,7 @@ class Cfg(Namespace):
         ex = "gid uid"
         ka.update(**{k: -1 for k in ex.split()})
 
-        ex = "hash_mt hsortn qdel safe_dedup scan_pr_r scan_pr_s scan_st_r srch_time tail_fd tail_rate th_spec_p u2abort u2j u2sz unp_who"
+        ex = "hash_mt hsortn qdel safe_dedup scan_pr_r scan_pr_s scan_st_r sparse srch_time tail_fd tail_rate th_spec_p u2abort u2j u2sz unp_who"
         ka.update(**{k: 1 for k in ex.split()})
 
         ex = "ac_convt au_vol dl_list du_iwho mcr mtab_age reg_cap s_thead s_tbody tail_tmax tail_who th_convt th_qv th_qvx ups_who ver_iwho zip_who"

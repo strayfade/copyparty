@@ -136,6 +136,7 @@ class HttpSrv(object):
         self.g422 = Garda(self.args.ban_422, False)
         self.gmal = Garda(self.args.ban_422)
         self.gurl = Garda(self.args.ban_url)
+        self.genc = Garda(self.args.ban_pw)
         self.bans: dict[str, int] = {}
         self.aclose: dict[str, int] = {}
 

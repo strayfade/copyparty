@@ -4077,3 +4077,11 @@ html.e #detree {
     pointer-events: none;
 	z-index: 99;
 }
+
+
+/* folder encryption */
+#enc_btns .btn{margin:0 0.2em;padding:0.2em 0.6em;background:#333;border:1px solid #555;border-radius:4px;cursor:pointer}
+#enc_btns .btn:hover{background:#444}
+#enc_lock_msg{border-radius:6px}
+#path .enc-icon{margin-right:0.3em}
+#files.enc_locked{filter:blur(1px)}

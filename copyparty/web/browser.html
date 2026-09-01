@@ -143,7 +143,9 @@
 			dfavico = "{{ favico }}",
 			have_tags_idx = {{ have_tags_idx }},
 			logues = {{ logues|tojson if sb_lg else "[]" }},
-			ls0 = {{ ls0|tojson }};
+			ls0 = {{ ls0|tojson }},
+			IS_ENC = {{ is_enc|tojson if is_enc is defined else "false" }},
+			IS_LOCKED = {{ is_locked|tojson if is_locked is defined else "false" }};
 
 		var STG = window.localStorage;
 		document.documentElement.className = (STG && STG.cpp_thm) || dtheme;
@@ -155,6 +157,7 @@
 	<script nonce="{{ js_nonce }}" src="{{ r }}/.cpr/w/baguettebox.js?_={{ ts }}"></script>
 	<script nonce="{{ js_nonce }}" src="{{ r }}/.cpr/w/browser.js?_={{ ts }}"></script>
 	<script nonce="{{ js_nonce }}" src="{{ r }}/.cpr/w/up2k.js?_={{ ts }}"></script>
+	<script nonce="{{ js_nonce }}" src="{{ r }}/.cpr/w/enc.js?_={{ ts }}"></script>
 	{%- if js %}
 	<script nonce="{{ js_nonce }}" src="{{ js }}_={{ ts }}"></script>
 	{%- endif %}
