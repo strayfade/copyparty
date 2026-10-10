@@ -393,7 +393,7 @@ function U2pvis(act, btns, uc, st) {
                 mod++;
             }
         }
-        if (mod && r.modn < 200 && ebi('repl').offsetTop) {
+        if (mod && r.modn < 200 && ebi('repl') && ebi('repl').offsetTop) {
             if (++r.modn >= 10) {
                 if (r.modn == 10)
                     r.mod0 = Date.now();
@@ -1960,7 +1960,8 @@ function up2k_init(subtle) {
                 }
 
                 if (is_busy && st.modn < 100) {
-                    var t0 = Date.now() + (ebi('repl').offsetTop ? 0 : 0);
+                    var _repl = ebi('repl');
+                    var t0 = Date.now() + (_repl && _repl.offsetTop ? 0 : 0);
 
                     if (++st.modn >= 10) {
                         if (st.modn == 10)
