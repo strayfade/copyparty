@@ -1,0 +1,118 @@
+name: Build and push to GHCR
+
+on:
+  push:
+    branches:
+      - hovudstraum
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - hovudstraum
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: ac
+            dockerfile: Dockerfile.ac
+            add_pkg: ffmpeg
+            platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386,linux/ppc64le,linux/s390x
+          - edition: im
+            dockerfile: Dockerfile.im
+            add_pkg: ""
+            platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386,linux/ppc64le,linux/s390x
+          - edition: min
+            dockerfile: Dockerfile.min
+            add_pkg: ""
+            platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386,linux/ppc64le,linux/s390x
+          - edition: iv
+            dockerfile: Dockerfile.iv
+            add_pkg: ffmpeg
+            platforms: linux/amd64,linux/arm64
+          - edition: dj
+            dockerfile: Dockerfile.dj
+            add_pkg: ffmpeg
+            platforms: linux/amd64,linux/arm64
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.edition }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          labels: |
+            org.opencontainers.image.title=copyparty-${{ matrix.edition }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build copyparty-sfx.py from source
+        run: |
+          python3 --version
+          bash scripts/make-sfx.sh
+
+      - name: Prepare docker build context (i/)
+        run: |
+          set -e
+          cd scripts/docker
+          rm -rf i
+          mkdir i
+          tar -cC ../../dist copyparty-sfx.py | tar -xvCi
+          tar -cC ../.. bin/mtag | tar -xvCi
+          # use stock alpine ffmpeg instead of the custom-built one
+          # (mirrors the `i` target in scripts/docker/Makefile)
+          touch i/stock_ffmpeg
+          ls -R i
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./scripts/docker
+          file: ./scripts/docker/${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          build-args: |
+            ADD_PKG=${{ matrix.add_pkg }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
