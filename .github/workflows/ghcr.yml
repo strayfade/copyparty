@@ -41,10 +41,9 @@ jobs:
             dockerfile: Dockerfile.iv
             add_pkg: ffmpeg
             platforms: linux/amd64,linux/arm64
-          - edition: dj
-            dockerfile: Dockerfile.dj
-            add_pkg: ffmpeg
-            platforms: linux/amd64,linux/arm64
+          # dj excluded: upstream Dockerfile.dj is bitrotted
+          # (install-deps.sh hits 403 + vamp pip build fails with
+          # "No module named 'numpy'"); re-add once upstream fixes it
 
     permissions:
       contents: read
@@ -116,3 +115,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # the dockge stack (and the previous manual image) uses the bare
+      # name ghcr.io/<owner>/copyparty, which has always been the `ac`
+      # edition (the recommended one); re-tag it so `latest` keeps working
+      - name: Publish bare image alias (ac only)
+        if: matrix.edition == 'ac' && github.ref == 'refs/heads/hovudstraum'
+        run: |
+          set -e
+          SRC="${{ env.REGISTRY }}/${{ github.repository }}-ac"
+          DST="${{ env.REGISTRY }}/${{ github.repository }}"
+          docker buildx imagetools create \
+            --tag "$DST:hovudstraum" --tag "$DST:latest" \
+            "$SRC:hovudstraum"
