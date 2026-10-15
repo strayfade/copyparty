@@ -88,7 +88,7 @@ jobs:
       - name: Build copyparty-sfx.py from source
         run: |
           python3 --version
-          bash scripts/make-sfx.sh
+          bash scripts/make-sfx.sh dl-wd
 
       - name: Prepare docker build context (i/)
         run: |
