@@ -4556,6 +4556,9 @@ class HttpCli(object):
                 sent += len(buf)
         except (BrokenPipeError, ConnectionResetError):
             return False
+        except enc_crypt.CryptError as ex:
+            self.log("encrypted file %r is damaged: %s" % (fid, ex), 3)
+            return False
         if self.dl_id:
             self.conn.hsrv.dls[self.dl_id] = (time.time(), 0)
         spd = self._spd(sent)

@@ -485,7 +485,8 @@ var ENCV = (function () {
         fetch(location.pathname.split("?")[0] + "?enc_status", { credentials: "same-origin" })
             .then(function (x) { return x.json(); })
             .then(function (j) {
-                if (j && j.locked && !enc().locked)
+                var e = enc();
+                if (e && j && j.locked && !e.locked)
                     location.reload();
             })
             .catch(function () { });
