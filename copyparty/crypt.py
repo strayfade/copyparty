@@ -527,7 +527,11 @@ def encrypt_file(src: str, dst: str, vk: bytes, fid: str, real_sz: int, prog=Non
             os.fsync(fo.fileno())
         except Exception:
             pass
-    os.chmod(dst, 0o600)
+    try:
+        os.chmod(dst, 0o600)
+    except OSError:
+        # some filesystems (vfat, ZFS with restricted NFSv4 ACLs) reject chmod
+        pass
     return padded
 
 

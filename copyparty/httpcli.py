@@ -4733,7 +4733,10 @@ class HttpCli(object):
         try:
             with open(tmp, "wb") as f:
                 enc_crypt.encrypt_stream(br, f, vault.vk, fid, clen, prog)
-            os.chmod(tmp, 0o600)
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
             os.replace(tmp, enc_crypt.blob_path(root, fid))
         except Exception as ex:
             try:

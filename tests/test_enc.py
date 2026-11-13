@@ -130,6 +130,34 @@ def enc_crypt_dir():
     return crypt.DIRNAME
 
 
+def test_chmod_eperm():
+    """ZFS datasets with restricted NFSv4 ACLs reject chmod; that must not break vaults"""
+    from unittest import mock
+
+    td = tempfile.mkdtemp()
+    try:
+        sub = os.path.join(td, "v")
+        os.makedirs(sub)
+        pathlib.Path(os.path.join(sub, "a.txt")).write_text("hello")
+
+        def boom(*a, **ka):
+            raise PermissionError(1, "Operation not permitted")
+
+        with mock.patch("copyparty.crypt.os.chmod", side_effect=boom):
+            crypt.encrypt_folder(sub, "pw123456")
+            vk, _meta = crypt.unlock(sub, "pw123456")
+            idx = crypt.load_index(sub, vk)
+            fid = [x for x, e in idx.e.items() if e["t"] == "f"][0]
+            assert (
+                b"".join(crypt.iter_decrypt(sub, fid, vk, idx.e[fid]["sz"])) == b"hello"
+            )
+            crypt.remove_vault(sub, "pw123456")
+        assert open(os.path.join(sub, "a.txt"), "rb").read() == b"hello"
+        print("test_chmod_eperm ok")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def test_crypt_roundtrip():
     td = tempfile.mkdtemp()
     try:
@@ -390,6 +418,7 @@ def test_http_unit_upload_race():
 if __name__ == "__main__":
     test_nested_reject()
     test_recover()
+    test_chmod_eperm()
     test_crypt_roundtrip()
     test_http_flow()
     test_http_unit_upload_race()
