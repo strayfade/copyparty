@@ -1,7 +1,7 @@
 FROM docker.io/copyparty/ac:latest
 
 COPY copyparty/web/ /tmp/custom/web/
-COPY copyparty/ico.py copyparty/httpcli.py /tmp/custom/
+COPY copyparty/ico.py copyparty/httpcli.py copyparty/crypt.py /tmp/custom/
 
 RUN set -e; \
     pkg=$(python3 -c "import copyparty, os; print(os.path.dirname(copyparty.__file__))"); \

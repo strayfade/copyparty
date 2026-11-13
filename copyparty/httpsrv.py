@@ -56,6 +56,7 @@ except SyntaxError:
     sys.exit(1)
 
 from .authsrv import LEELOO_DALLAS
+from . import crypt as enc_crypt
 from .httpconn import HttpConn
 from .ico import Ico
 from .metrics import Metrics
@@ -139,6 +140,22 @@ class HttpSrv(object):
         self.genc = Garda(self.args.ban_pw)
         self.bans: dict[str, int] = {}
         self.aclose: dict[str, int] = {}
+
+        # password-protected folders
+        self.enc = bool(getattr(self.args, "enc", False)) and enc_crypt.have_crypto()
+        if self.enc and int(getattr(self.args, "j", 1) or 1) > 1:
+            self.log(
+                "folder encryption needs --workers=1 (sessions live in process RAM); disabling",
+                1,
+            )
+            self.enc = False
+        self.enc_idle = int(getattr(self.args, "enc_idle", enc_crypt.DEFAULT_IDLE) or 0)
+        self.enc_sessions = enc_crypt.Sessions(self.enc_idle)
+        self.enc_jobs = enc_crypt.Jobs()
+        if self.enc:
+            th = threading.Thread(target=self._enc_sweeper, name="cpp-enc-sweep")
+            th.daemon = True
+            th.start()
 
         self.thumbcli: Optional[ThumbCli] = None
         self.ico: Ico = Ico(self.args)
@@ -283,6 +300,14 @@ class HttpSrv(object):
         assert self.tp_q  # !rm
         for _ in range(n):
             self.tp_q.put(None)
+
+    def _enc_sweeper(self) -> None:
+        while not getattr(self, "stopping", False):
+            time.sleep(10)
+            try:
+                self.enc_sessions.sweep()
+            except Exception:
+                pass
 
     def periodic(self) -> None:
         while True:

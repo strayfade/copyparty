@@ -5,11 +5,13 @@ import argparse  # typechk
 import copy
 import errno
 import hashlib
+import io
 import itertools
 import json
 import os
 import random
 import re
+import shutil
 import socket
 import stat
 import sys
@@ -163,7 +165,7 @@ _ = (argparse, threading)
 
 USED4SEC = {"usedforsecurity": False} if sys.version_info > (3, 9) else {}
 
-ALL_COOKIES = "cplng cppwd cppws dots idxh js k304 no304".split()
+ALL_COOKIES = "cplng cppwd cppws cppwenc dots idxh js k304 no304".split()
 
 BADXFF = " due to dangerous misconfiguration (the http-header specified by --xff-hdr was received from an untrusted reverse-proxy)"
 BADXFF2 = ". Some copyparty features are now disabled as a safety measure.\n\n\n"
@@ -238,6 +240,27 @@ ZIP_XCODE_S = set(ZIP_XCODE_L)
 
 def _arg2cfg(txt: str) -> str:
     return re.sub(r' "--([^=]{3,12})=', r' global-option "\1: ', txt)
+
+
+class _Encreader(object):
+    """adapts a socket-body generator to a read(n) file-like object"""
+
+    def __init__(self, gen) -> None:
+        self.gen = gen
+        self.buf = b""
+        self.eof = False
+
+    def read(self, n: int) -> bytes:
+        while len(self.buf) < n and not self.eof:
+            try:
+                chunk = next(self.gen)
+            except StopIteration:
+                self.eof = True
+                break
+            if chunk:
+                self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
 
 
 class HttpCli(object):
@@ -1583,13 +1606,9 @@ class HttpCli(object):
             if self.vpath.startswith("wopi"):
                 return self.tx_wopi_api()
 
-        # folder encryption: status / unlock via GET
-        if "enc_status" in self.uparam or "enc-status" in self.uparam:
-            return self.handle_enc_status()
-        if "enc_unlock" in self.uparam or "enc-unlock" in self.uparam:
-            return self.handle_enc_unlock()
-        if "enc_info" in self.uparam:
-            return self.handle_enc_status()
+        # folder encryption: virtual paths, locked-folder status, decrypted files
+        if self._enc_on() and self._enc_tx_get():
+            return True
 
         return self.tx_browser()
 
@@ -2334,6 +2353,7 @@ class HttpCli(object):
     def handle_mkcol(self) -> bool:
         if self._applesan():
             return True
+        self._enc_write_guard()
 
         if self.do_log:
             self.log("MKCOL %s @%s" % (self.req, self.uname))
@@ -2356,6 +2376,7 @@ class HttpCli(object):
             return True
 
     def handle_cpmv(self) -> bool:
+        self._enc_internal_guard()
         dst = self.headers["destination"]
 
         # dolphin (kioworker/6.10) "webdav://127.0.0.1:3923/a/b.txt"
@@ -2465,28 +2486,24 @@ class HttpCli(object):
             self.log(" `-- %r" % (self.vpath,))
 
         # folder encryption endpoints (handle before other dispatch)
-        if "encrypt" in self.uparam or "enc" in self.uparam:
-            # need body PW; try JSON or form
-            # if JSON, delegate to handle_post_json path which will set _enc_json_pw
-            # but for generic POST (fetch with JSON but ctype json already handled separately)
-            # For multipart ups, handle_post_multipart will handle, but we intercept here for ?encrypt with JSON
-            # So if content-type is json, let handle_post_json handle it; else handle directly
-            ctype = self.headers.get("content-type", "").lower()
-            if "json" in ctype:
+        if self._enc_on():
+            if "enc_put" in self.uparam:
+                return self._enc_tx_upload()
+            if "enc-new" in self.uparam:
+                self.uparam["enc_new"] = self.uparam["enc-new"]
+            if any(
+                k in self.uparam
+                for k in (
+                    "enc_new",
+                    "enc_unlock",
+                    "enc_lock",
+                    "enc_remove",
+                    "enc_mkdir",
+                    "enc_rename",
+                    "enc_rm",
+                )
+            ):
                 return self.handle_post_json()
-            return self.handle_encrypt()
-        if "decrypt" in self.uparam or "dec" in self.uparam:
-            ctype = self.headers.get("content-type", "").lower()
-            if "json" in ctype:
-                return self.handle_post_json()
-            return self.handle_decrypt()
-        if "enc_unlock" in self.uparam or "unlock" in self.uparam:
-            ctype = self.headers.get("content-type", "").lower()
-            if "json" in ctype:
-                return self.handle_post_json()
-            return self.handle_enc_unlock()
-        if "enc_status" in self.uparam:
-            return self.handle_enc_status()
 
         if self.headers.get("expect", "").lower() == "100-continue":
             try:
@@ -2665,16 +2682,7 @@ class HttpCli(object):
         # post_sz, halg, sha_hex, sha_b64, remains, path, url
         reader, remains = self.get_body_reader()
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
-        # enc check for PUT/stash
-        try:
-            _ap = vfs.canonical(rem)
-            _is_enc, _is_locked, _, _ = self._enc_is_locked(_ap)
-            if _is_enc and _is_locked:
-                raise Pebkac(403, "folder is locked - password required")
-        except Pebkac:
-            raise
-        except:
-            pass
+        self._enc_write_guard()
         rnd, lifetime, xbu, xau = self.upload_flags(vfs)
         lim = vfs.get_dbv(rem)[0].lim
         fdir = vfs.canonical(rem)
@@ -2980,17 +2988,8 @@ class HttpCli(object):
         else:
             sz = post_sz
 
-        # folder encryption: if destination is inside encrypted folder and unlocked, encrypt file
-        try:
-            is_enc2, is_locked2, enc_root2, enc_key2 = self._enc_is_locked(path)
-            if is_enc2 and not is_locked2 and enc_key2 is not None:
-                # file was just written plaintext; encrypt in place
-                try:
-                    enc_crypt.encrypt_file(path, enc_key2)
-                except Exception as ex:
-                    self.log("post-encrypt failed: %s" % (ex,), 3)
-        except:
-            pass
+        # encrypted folders only accept writes through the vault layer
+        self._enc_write_guard()
 
         vfs, rem = vfs.get_dbv(rem)
         self.conn.hsrv.broker.say(
@@ -3226,9 +3225,18 @@ class HttpCli(object):
             body = json.loads(json_buf.decode(enc, "replace"))
             try:
                 zds = {k: v for k, v in body.items()}
-                zds["hash"] = "%d chunks" % (len(body["hash"]),)
+                if any(str(k).startswith("enc") for k in self.uparam):
+                    zds = "(vault operation)"
+                if "password" in zds:
+                    zds["password"] = "***"
+                if "confirm" in zds:
+                    zds["confirm"] = "***"
+                try:
+                    zds["hash"] = "%d chunks" % (len(body["hash"]),)
+                except Exception:
+                    pass
             except:
-                zds = body
+                zds = "(unprintable)"
             t = "POST len=%d type=%s ip=%s user=%s req=%r json=%s"
             self.log(t % (len(json_buf), enc, self.ip, self.uname, self.req, zds))
         except:
@@ -3238,18 +3246,22 @@ class HttpCli(object):
         # return True
 
         # folder encryption JSON endpoints
-        if "encrypt" in self.uparam or "enc" in self.uparam:
-            self._enc_json_pw = body.get("password") or body.get("pw") or body.get("enc_pw") or ""
-            self._enc_json_pw2 = body.get("confirm") or body.get("password2") or body.get("pw2") or ""
-            return self.handle_encrypt()
-        if "decrypt" in self.uparam or "dec" in self.uparam:
-            self._enc_json_pw = body.get("password") or body.get("pw") or body.get("enc_pw") or ""
-            return self.handle_decrypt()
-        if "enc_unlock" in self.uparam or "unlock" in self.uparam:
-            self._enc_json_pw = body.get("password") or body.get("pw") or body.get("enc_pw") or ""
-            return self.handle_enc_unlock()
-        if "enc_status" in self.uparam:
-            return self.handle_enc_status()
+        self._enc_req_body = body
+        if self._enc_on():
+            if "enc_new" in self.uparam:
+                return self.handle_enc_new()
+            if "enc_unlock" in self.uparam or "enc-unlock" in self.uparam:
+                return self.handle_enc_unlock()
+            if "enc_lock" in self.uparam:
+                return self.handle_enc_lock()
+            if "enc_remove" in self.uparam:
+                return self.handle_enc_remove()
+            if "enc_mkdir" in self.uparam:
+                return self.handle_enc_mkdir()
+            if "enc_rename" in self.uparam:
+                return self.handle_enc_rename()
+            if "enc_rm" in self.uparam:
+                return self.handle_enc_rm()
 
         if "srch" in self.uparam or "srch" in body:
             return self.handle_search(body)
@@ -3265,16 +3277,8 @@ class HttpCli(object):
             raise Pebkac(400, "your client is old; press CTRL-SHIFT-R and try again")
 
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
-        # enc check for up2k uploads
-        try:
-            _ap = vfs.canonical(rem)
-            _is_enc, _is_locked, _enc_root, _enc_key = self._enc_is_locked(_ap)
-            if _is_enc and _is_locked:
-                raise Pebkac(403, "folder is locked - password required (X-Enc-PW header or ?enc_pw=)")
-        except Pebkac:
-            raise
-        except:
-            pass
+        # encrypted folders only accept writes through the vault layer
+        self._enc_write_guard()
         fsnt = vfs.flags["fsnt"]
         if fsnt != "lin":
             tl = VPTL_WIN if fsnt == "win" else VPTL_MAC
@@ -3815,6 +3819,7 @@ class HttpCli(object):
 
     def handle_mkdir(self) -> bool:
         assert self.parser  # !rm
+        self._enc_write_guard()
         new_dir = self.parser.require("name", 512)
         self.parser.drop()
 
@@ -3867,6 +3872,7 @@ class HttpCli(object):
         nullwrite = self.args.nw
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
         self._assert_safe_rem(rem)
+        self._enc_write_guard()
 
         if not self.can_delete and (
             "." not in new_file
@@ -3937,246 +3943,819 @@ class HttpCli(object):
         return True
 
     # ------------------------------------------------------------------
-    # folder encryption (quantum-secure AES-256-GCM + Argon2id)
+    # ------------------------------------------------------------------
+    # folder encryption (password-protected folders)
 
-    def _enc_get_pw(self) -> str:
-        """Password for enc ops from header / uparam / json."""
-        # header takes precedence (used by JS fetch)
-        pw = self.headers.get("x-enc-pw") or self.headers.get("x-enc_pw") or ""
-        if pw:
-            return pw
-        pw = self.uparam.get("enc_pw") or self.uparam.get("enc-pw") or ""
-        if pw:
-            return pw
-        # also check cookies for unlock persistence
-        try:
-            # cookie name: enc_<vpath_hash>
-            # we store raw pw in JS sessionStorage, but also try cookie fallback
-            for k, v in self.cookies.items():
-                if k.startswith("enc_"):
-                    # value is pw (not ideal but okay for now)
-                    return v
-        except:
-            pass
-        return ""
+    def _enc_on(self) -> bool:
+        return bool(getattr(self.conn.hsrv, "enc", False))
 
-    def _enc_require_write(self, vfs, rem):
-        if not self.can_write or not self.can_move or not self.can_delete:
-            raise Pebkac(403, "need r+w+m+d to encrypt/decrypt folders")
+    def _enc_sid(self) -> str:
+        return self.cookies.get("cppwenc", "") or ""
 
-    def _enc_ap(self, vfs, rem):
-        # type: ignore
-        ap = vfs.canonical(rem)
-        # ensure we are at a directory
-        if not bos.path.isdir(ap):
-            raise Pebkac(400, "not a folder: /%s" % (vjoin(vfs.vpath, rem),))
-        return ap
-
-    def _enc_read_json_pw(self):
-        """Read password from JSON body or form."""
-        pw = ""
-        pw2 = ""
-        # try JSON body first
-        try:
-            # peek at body if already parsed? For POST JSON, handle_post_json already parsed
-            # but for generic POST we read via get_body_reader
-            ctype = self.headers.get("content-type", "")
-            if "json" in ctype:
-                length = int(self.headers.get("content-length", "0") or 0)
-                if length and length < 8192:
-                    body = self.sr.recv(length) if hasattr(self.sr, "recv") else b""
-                    # fallback: read via unrecv? simplest: use parser if available
-                    pass
-        except:
-            pass
-        # fallback to uparam (handles ?enc_pw= and also form fields via handle_post_multipart)
-        pw = self.uparam.get("password") or self.uparam.get("pw") or self.uparam.get("enc_pw") or ""
-        pw2 = self.uparam.get("confirm") or self.uparam.get("password2") or ""
-        # also check headers
-        hpw = self.headers.get("x-enc-pw") or ""
-        if hpw and not pw:
-            pw = hpw
-        return pw, pw2
-
-    def handle_encrypt(self) -> bool:
-        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
-        self._enc_require_write(vfs, rem)
-        ap = self._enc_ap(vfs, rem)
-        # password from body/json/uparam/header
-        pw = ""
-        pw2 = ""
-        # try to get from JSON via handle_post_json path (we will call this from handle_post_json)
-        # For direct POST ?encrypt, try multipart/form or uparam
-        # For fetch JSON, self._enc_json_pw will be set by caller
-        if hasattr(self, "_enc_json_pw"):
-            pw = getattr(self, "_enc_json_pw") or ""
-            pw2 = getattr(self, "_enc_json_pw2") or ""
-        else:
-            pw, pw2 = self._enc_read_json_pw()
-            # also try reading raw body as json
-            if not pw:
-                try:
-                    length = int(self.headers.get("content-length", "0") or 0)
-                    if length and length < 4096:
-                        # need to ensure we haven't consumed body; try to read from s
-                        pass
-                except:
-                    pass
-        if not pw:
-            raise Pebkac(400, "password required")
-        if len(pw) < 4:
-            raise Pebkac(400, "password too short (min 4 chars)")
-        if pw2 and pw != pw2:
-            raise Pebkac(400, "passwords do not match")
-        # check already encrypted
-        if enc_crypt.is_encrypted_dir(ap):
-            raise Pebkac(400, "folder already encrypted")
-        if not enc_crypt.HAVE_AESGCM:
-            raise Pebkac(500, "server missing cryptography library (pip install cryptography)")
-        self.log("encrypting folder %r" % (ap,))
-        try:
-            enc_crypt.encrypt_folder(ap, pw)
-        except Exception as ex:
-            self.log("encrypt failed: %s" % (min_ex(),), 3)
-            raise Pebkac(500, "encrypt failed: %s" % (ex,))
-        # invalidate up2k cache for this volume
-        try:
-            dbv, vrem = vfs.get_dbv(rem)
-            self.conn.hsrv.broker.say("up2k.rescan", dbv.realpath)
-        except:
-            pass
-        self.reply(json.dumps({"ok": True, "msg": "folder encrypted"}).encode("utf-8"), mime="application/json")
-        return True
-
-    def handle_decrypt(self) -> bool:
-        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
-        self._enc_require_write(vfs, rem)
-        ap = self._enc_ap(vfs, rem)
-        pw = ""
-        pw2 = ""
-        if hasattr(self, "_enc_json_pw"):
-            pw = getattr(self, "_enc_json_pw") or ""
-        else:
-            pw, _ = self._enc_read_json_pw()
-        if not pw:
-            # also check x-enc-pw header
-            pw = self.headers.get("x-enc-pw") or self.uparam.get("enc_pw") or ""
-        if not pw:
-            raise Pebkac(400, "password required")
-        if not enc_crypt.is_encrypted_dir(ap):
-            raise Pebkac(400, "folder not encrypted")
-        # verify password before doing work (fast fail + garda)
-        try:
-            meta = enc_crypt.load_meta(ap)
-        except Exception as ex:
-            raise Pebkac(500, "cannot read meta: %s" % (ex,))
-        if not enc_crypt.verify_password(pw, meta):
-            self.cbonk(self.conn.hsrv.genc, pw, "enc", "bad enc passwords")
-            raise Pebkac(403, "incorrect password")
-        if not enc_crypt.HAVE_AESGCM:
-            raise Pebkac(500, "server missing cryptography library")
-        self.log("decrypting folder %r" % (ap,))
-        try:
-            enc_crypt.decrypt_folder(ap, pw)
-        except Exception as ex:
-            self.log("decrypt failed: %s" % (min_ex(),), 3)
-            raise Pebkac(500, "decrypt failed: %s" % (ex,))
-        try:
-            dbv, vrem = vfs.get_dbv(rem)
-            self.conn.hsrv.broker.say("up2k.rescan", dbv.realpath)
-        except:
-            pass
-        self.reply(json.dumps({"ok": True, "msg": "folder decrypted"}).encode("utf-8"), mime="application/json")
-        return True
-
-    def handle_enc_unlock(self) -> bool:
-        """Verify password for locked folder without mutating; sets cookie for convenience."""
-        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, True, False)
-        ap = vfs.canonical(rem)
-        # find enc root (could be parent)
-        enc_root = enc_crypt.find_enc_root(ap)
-        if not enc_root:
-            # also check if ap itself is file inside encrypted folder -> find parent
-            # try canonical for vpath itself if rem empty -> ap is folder
-            enc_root = None
-            # walk up from ap
-            cur = ap
-            for _ in range(8):
-                if enc_crypt.is_encrypted_dir(cur):
-                    enc_root = cur
-                    break
-                cur = os.path.dirname(cur)
-                if cur == os.path.dirname(cur):
-                    break
-        if not enc_root:
-            raise Pebkac(400, "not inside an encrypted folder")
-        pw = ""
-        if hasattr(self, "_enc_json_pw"):
-            pw = getattr(self, "_enc_json_pw") or ""
-        else:
-            pw, _ = self._enc_read_json_pw()
-            if not pw:
-                pw = self.headers.get("x-enc-pw") or self.uparam.get("enc_pw") or ""
-        if not pw:
-            raise Pebkac(400, "password required")
-        try:
-            meta = enc_crypt.load_meta(enc_root)
-        except:
-            raise Pebkac(500, "cannot read meta")
-        if not enc_crypt.verify_password(pw, meta):
-            self.cbonk(self.conn.hsrv.genc, pw, "enc", "bad enc passwords")
-            raise Pebkac(403, "incorrect password")
-        # success: set a short-lived cookie (not httpOnly so JS can see) for convenience
-        # cookie name encodes enc root vpath hash to avoid collisions
-        vp_enc = vfs.vpath  # approx
-        ck = gencookie("enc_" + b64e(hashlib.sha256(enc_root.encode()).digest()[:6]), pw, self.args.R, self.args.cookie_lax, self.is_https, 3600, "")
+    def _enc_cookie(self, sid: str) -> None:
+        dur = int(getattr(self.args, "enc_idle", enc_crypt.DEFAULT_IDLE) or 0) + 60
+        ck = gencookie(
+            "cppwenc",
+            sid,
+            self.args.R,
+            self.args.cookie_lax,
+            self.is_https,
+            dur,
+            "; HttpOnly",
+        )
         self.out_headerlist.append(("Set-Cookie", ck))
-        self.reply(json.dumps({"ok": True, "msg": "unlock ok"}).encode("utf-8"), mime="application/json")
+
+    def _enc_json(self, obj: dict, status: int = 200) -> bool:
+        self.reply(
+            json.dumps(obj).encode("utf-8"), mime="application/json", status=status
+        )
         return True
 
-    def handle_enc_status(self) -> bool:
-        vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, True, False)
-        ap = vfs.canonical(rem)
-        enc_root = enc_crypt.find_enc_root(ap)
-        locked = False
-        is_enc = False
-        if enc_root or enc_crypt.is_encrypted_dir(ap):
-            is_enc = True
-            # check if we have valid pw
-            pw = self._enc_get_pw()
-            if pw:
-                try:
-                    meta = enc_crypt.load_meta(enc_root or ap)
-                    if enc_crypt.verify_password(pw, meta):
-                        locked = False
-                    else:
-                        locked = True
-                except:
-                    locked = True
-            else:
-                locked = True
-        self.reply(json.dumps({"is_enc": is_enc, "locked": locked}).encode("utf-8"), mime="application/json")
+    def _enc_body(self) -> dict:
+        return getattr(self, "_enc_req_body", {}) or {}
+
+    def _enc_pw(self) -> str:
+        b = self._enc_body()
+        v = b.get("password")
+        if v is None:
+            v = b.get("pw")
+        if v is None:
+            v = self.uparam.get("enc_pw", "")
+        return str(v or "")
+
+    def _enc_confirm(self) -> str:
+        b = self._enc_body()
+        v = b.get("confirm")
+        if v is None:
+            v = b.get("password2")
+        return str(v or "")
+
+    def _enc_canon(self) -> str:
+        return self.vn.canonical(self.rem)
+
+    def _enc_root_here(self, allow_parent: bool = False):
+        ap = self._enc_canon()
+        if enc_crypt.is_vault(ap):
+            return ap
+        if allow_parent:
+            return enc_crypt.find_vault_root(ap)
+        return None
+
+    def _enc_parse_vp(self) -> tuple[str, str, str]:
+        parts = self.vpath.split("/")
+        if enc_crypt.DIRNAME not in parts:
+            return self.vpath, "", ""
+        i = parts.index(enc_crypt.DIRNAME)
+        vroot = "/".join(parts[:i])
+        rest = parts[i + 1 :]
+        return vroot, (rest[0] if rest else ""), (rest[1] if len(rest) > 1 else "")
+
+    def _enc_vroot_ap(self, vroot: str) -> str:
+        vn, rem = self.asrv.vfs.get(vroot, self.uname, True, False)
+        return vn.canonical(rem)
+
+    def _enc_vault(self, root: str):
+        sid = self._enc_sid()
+        if not sid:
+            return None
+        return self.conn.hsrv.enc_sessions.get(sid, self.uname, root)
+
+    def _enc_current(self):
+        """(root, vault, kind, fid) for the URL this request is on"""
+        vroot, kind, fid = self._enc_parse_vp()
+        if kind:
+            try:
+                root = self._enc_vroot_ap(vroot)
+            except Pebkac:
+                return None, None, kind, fid
+        else:
+            root = self._enc_root_here(allow_parent=True)
+        if not root or not enc_crypt.is_vault(root):
+            return None, None, kind, fid
+        return root, self._enc_vault(root), kind, fid
+
+    def _enc_need(self, write: bool = False) -> None:
+        if not self._enc_on():
+            raise Pebkac(404)
+        if write and not (self.can_write and self.can_move and self.can_delete):
+            raise Pebkac(
+                403, "need read+write+move+delete permissions in this folder"
+            )
+
+    def _enc_write_guard(self) -> None:
+        """reject any normal write path that would bypass the vault"""
+        if not self._enc_on():
+            return
+        _vroot, kind, _fid = self._enc_parse_vp()
+        if kind:
+            raise Pebkac(403, "encrypted folder internals cannot be written directly")
+        if self._enc_root_here():
+            raise Pebkac(
+                403, "this folder is encrypted; upload through the folder's own uploader"
+            )
+
+    def _enc_internal_guard(self) -> None:
+        """block normal file operations on vault internals (.cpp_enc/...)"""
+        if not self._enc_on():
+            return
+        if self._enc_parse_vp()[1]:
+            raise Pebkac(403, "encrypted folder internals cannot be modified this way")
+
+    def _enc_dest_guard(self, vdst: str) -> None:
+        """block normal moves/copies into a vault or its internals"""
+        if not self._enc_on():
+            return
+        parts = vdst.strip("/").split("/")
+        if enc_crypt.DIRNAME in parts:
+            raise Pebkac(403, "cannot write into an encrypted folder this way")
+        try:
+            vn, rem = self.asrv.vfs.get(vdst, self.uname, False, True)
+            ap = vn.canonical(rem)
+        except Exception:
+            return
+        check = ap if os.path.isdir(ap) else os.path.dirname(ap)
+        if enc_crypt.is_vault(check):
+            raise Pebkac(403, "cannot write into an encrypted folder this way")
+
+    def _enc_delete_vpaths(self, req: list[str]) -> bool:
+        """map normal ?delete of vault entries onto index deletions"""
+        if not self._enc_on() or not req:
+            return False
+        if not self.can_delete:
+            raise Pebkac(403, "'delete' not allowed for user " + self.uname)
+        groups: dict[str, list[str]] = {}
+        for vp in req:
+            if self.is_vproxied and vp.startswith(self.args.SR):
+                vp = vp[len(self.args.SR) :]
+            parts = vp.strip("/").split("/")
+            if enc_crypt.DIRNAME not in parts:
+                return False
+            i = parts.index(enc_crypt.DIRNAME)
+            vroot = "/".join(parts[:i])
+            rest = parts[i + 1 :]
+            if len(rest) < 2 or rest[0] not in ("d", "v"):
+                return False
+            groups.setdefault(vroot, []).append(rest[1])
+        for vroot, ids in groups.items():
+            try:
+                root = self._enc_vroot_ap(vroot)
+            except Pebkac:
+                raise
+            vault = self._enc_vault(root)
+            if not vault:
+                raise Pebkac(423, "this folder is locked")
+            with enc_crypt.vault_lock(root):
+                vault.refresh()
+                for xid in ids:
+                    if xid not in vault.idx.e:
+                        continue
+                    ents = [
+                        (x, dict(vault.idx.e[x]))
+                        for x in vault.idx.all_ids(xid)
+                        if x in vault.idx.e
+                    ]
+                    vault.idx.remove(xid)
+                    for x, ent in ents:
+                        if ent.get("t") != "f":
+                            continue
+                        try:
+                            os.unlink(enc_crypt.blob_path(root, x))
+                        except Exception:
+                            pass
+                enc_crypt.save_index(root, vault.vk, vault.idx)
+        self.loud_reply("rm ok")
         return True
 
     def _enc_is_locked(self, ap: str):
-        """Return (is_enc, locked, enc_root, key_or_None)."""
-        enc_root = enc_crypt.find_enc_root(ap)
-        if enc_crypt.is_encrypted_dir(ap):
-            enc_root = ap
-        if not enc_root:
+        """compat shim for older call sites: (is_vault, locked, root, key|None)"""
+        if not self._enc_on():
             return False, False, None, None
-        pw = self._enc_get_pw()
+        root = enc_crypt.find_vault_root(ap)
+        if not root:
+            return False, False, None, None
+        v = self._enc_vault(root)
+        if not v:
+            return True, True, root, None
+        return True, False, root, v.vk
+
+    def _enc_unique_name(self, idx, parent: str, name: str) -> str:
+        if not idx.lookup(parent, name):
+            return name
+        if "." in name and not name.startswith("."):
+            stem, ext = name.rsplit(".", 1)
+            ext = "." + ext
+        else:
+            stem, ext = name, ""
+        for n in range(2, 10000):
+            cand = "%s (%d)%s" % (stem, n, ext)
+            if not idx.lookup(parent, cand):
+                return cand
+        raise Pebkac(409, "too many copies of that file name")
+
+    def _enc_thumb_purge(self, vfs, rem):
+        """delete cached thumbnails for files that are about to be encrypted"""
         try:
-            meta = enc_crypt.load_meta(enc_root)
-        except:
-            return True, True, enc_root, None
-        if pw and enc_crypt.verify_password(pw, meta):
+            from .th_srv import thumb_path
+
+            dbv, vrem = vfs.get_dbv(rem)
+            histpath = dbv.histpath
+            if not histpath:
+                return None
+            vrem = vrem.strip("/")
+
+            def cb(rel: str, mtime: int) -> None:
+                full = (vrem + "/" if vrem else "") + rel
+                thp = thumb_path(histpath, full, 0, "j", set())
+                rd = os.path.relpath(
+                    os.path.dirname(thp), os.path.join(histpath, "th")
+                )
+                for cat in ("th", "ac"):
+                    shutil.rmtree(
+                        os.path.join(histpath, cat, rd), ignore_errors=True
+                    )
+
+            return cb
+        except Exception:
+            return None
+
+    def _enc_watch_rescan(self, job, vfs, rem) -> None:
+        """drop up2k index rows for files that were just encrypted"""
+        try:
+            dbv, _ = vfs.get_dbv(rem)
+            realpath = dbv.realpath
+            broker = self.conn.hsrv.broker
+        except Exception:
+            return
+
+        def watch() -> None:
             try:
-                key = enc_crypt.get_key(pw, meta)
-                return True, False, enc_root, key
-            except:
-                return True, True, enc_root, None
-        return True, True, enc_root, None
+                if job.thread:
+                    job.thread.join()
+                if not job.error:
+                    broker.say("up2k.rescan", realpath)
+            except Exception:
+                pass
+
+        th = threading.Thread(target=watch, name="cpp-enc-rescan")
+        th.daemon = True
+        th.start()
+
+    # -- jobs / auth
+
+    def handle_enc_new(self) -> bool:
+        self._enc_need(True)
+        ap = self._enc_canon()
+        if not bos.path.isdir(ap):
+            raise Pebkac(400, "not a folder")
+        if enc_crypt.is_vault(ap):
+            raise Pebkac(400, "folder is already encrypted")
+        if not enc_crypt.have_crypto():
+            raise Pebkac(500, "server is missing cryptography/argon2 support")
+        pw = self._enc_pw()
+        cf = self._enc_confirm()
+        if len(pw) < 8:
+            raise Pebkac(400, "password must be at least 8 characters")
+        if cf and cf != pw:
+            raise Pebkac(400, "passwords do not match")
+        job = self.conn.hsrv.enc_jobs.start(
+            "encrypt",
+            ap,
+            pw,
+            kdf_m=int(getattr(self.args, "enc_kdf", 256) or 256) * 1024,
+            purge_cb=self._enc_thumb_purge(self.vn, self.rem),
+        )
+        self.log("encrypt-folder start %r" % (ap,))
+        self._enc_watch_rescan(job, self.vn, self.rem)
+        return self._enc_json({"ok": True, "job": job.json()})
+
+    def handle_enc_unlock(self) -> bool:
+        self._enc_need()
+        root = self._enc_root_here(allow_parent=True)
+        if not root:
+            raise Pebkac(400, "not an encrypted folder")
+        self._enc_maybe_recover(root)
+        pw = self._enc_pw()
+        if not pw:
+            raise Pebkac(400, "password required")
+        try:
+            vk, meta = enc_crypt.unlock(root, pw)
+        except enc_crypt.BadPassword:
+            self.cbonk(self.conn.hsrv.genc, pw, "enc", "bad enc passwords")
+            raise Pebkac(403, "incorrect password")
+        except enc_crypt.CryptError as ex:
+            raise Pebkac(409, str(ex))
+        try:
+            idx = enc_crypt.load_index(root, vk)
+        except enc_crypt.CryptError as ex:
+            raise Pebkac(409, str(ex))
+        hs = self.conn.hsrv.enc_sessions
+        sid = self._enc_sid()
+        if not sid or not hs.sid_ok(sid, self.uname):
+            sid = hs.new_sid(self.uname)
+        sid, _v = hs.put(sid, self.uname, vk, meta, idx, root)
+        self.cookies["cppwenc"] = sid
+        self._enc_cookie(sid)
+        self.log("encrypt-folder unlocked %r" % (root,))
+        return self._enc_json({"ok": True, "locked": False})
+
+    def handle_enc_lock(self) -> bool:
+        root = self._enc_root_here(allow_parent=True)
+        sid = self._enc_sid()
+        if sid and root:
+            self.conn.hsrv.enc_sessions.drop(sid, root)
+        return self._enc_json({"ok": True, "locked": True})
+
+    def handle_enc_remove(self) -> bool:
+        self._enc_need(True)
+        root = self._enc_root_here()
+        if not root:
+            raise Pebkac(400, "not an encrypted folder")
+        pw = self._enc_pw()
+        if not pw:
+            raise Pebkac(400, "password required")
+        try:
+            enc_crypt.unwrap_vk(pw, enc_crypt.load_meta(root))
+        except enc_crypt.BadPassword:
+            self.cbonk(self.conn.hsrv.genc, pw, "enc", "bad enc passwords")
+            raise Pebkac(403, "incorrect password")
+        except enc_crypt.CryptError as ex:
+            raise Pebkac(409, str(ex))
+        # the key is no longer needed by this process
+        sid = self._enc_sid()
+        if sid:
+            self.conn.hsrv.enc_sessions.drop(sid, root)
+        job = self.conn.hsrv.enc_jobs.start("remove", root, pw)
+        self.log("encrypt-folder remove %r" % (root,))
+        return self._enc_json({"ok": True, "job": job.json()})
+
+    def handle_enc_status(self) -> bool:
+        root = None
+        try:
+            root = self._enc_root_here(allow_parent=True)
+        except Exception:
+            pass
+        out: dict = {
+            "enabled": self._enc_on(),
+            "enc": bool(root),
+            "locked": True,
+            "job": None,
+        }
+        if root:
+            vault = self._enc_vault(root)
+            out["locked"] = vault is None
+            out["state"] = "unlocked" if vault else "locked"
+            try:
+                meta = enc_crypt.load_meta(root)
+                if meta.get("state") in ("encrypting", "removing"):
+                    out["state"] = meta["state"]
+            except Exception:
+                out["state"] = "broken"
+            job = self.conn.hsrv.enc_jobs.for_root(root)
+            if job:
+                out["job"] = job.json()
+        return self._enc_json(out)
+
+    def handle_enc_job(self) -> bool:
+        jid = self.uparam.get("enc_job") or ""
+        job = self.conn.hsrv.enc_jobs.get(jid)
+        if not job:
+            raise Pebkac(404, "no such job")
+        return self._enc_json({"ok": True, "job": job.json()})
+
+    def handle_enc_cancel(self) -> bool:
+        jid = self.uparam.get("enc_cancel") or ""
+        job = self.conn.hsrv.enc_jobs.get(jid)
+        if not job:
+            raise Pebkac(404, "no such job")
+        job.cancel.set()
+        return self._enc_json({"ok": True, "job": job.json()})
+
+    # -- listing / streaming
+
+    def _enc_browse_ctx(self, abspath: str):
+        if not self._enc_on():
+            return None
+        ctx = getattr(self, "_enc_ctx", None)
+        if ctx:
+            return ctx
+        if enc_crypt.is_vault(abspath):
+            self._enc_maybe_recover(abspath)
+            return (abspath, "")
+        return None
+
+    def _enc_maybe_recover(self, root: str) -> None:
+        """finish or roll back an encryption job that was interrupted"""
+        try:
+            meta = enc_crypt.load_meta(root)
+        except Exception:
+            return
+        if meta.get("state") != "encrypting":
+            return
+        with enc_crypt.vault_lock(root):
+            try:
+                st = enc_crypt.recover(root)
+            except Exception:
+                st = "broken"
+        if st in ("recovered", "rolledback"):
+            self.log("encrypt-folder recovered %r (%s)" % (root, st))
+
+    def _enc_vpath_base(self) -> str:
+        return ("/" + self.vpath + "/") if self.vpath else "/"
+
+    def _enc_listing(self, ctx, vault, locked: bool):
+        dirs: list[dict] = []
+        files: list[dict] = []
+        if locked or not vault:
+            return dirs, files
+        root, fid = ctx
+        idx = vault.idx
+        depth = len(idx.trail(fid)) if fid else 0
+        pref = enc_crypt.DIRNAME + "/" if depth == 0 else "../" * depth
+        eb = pref
+        dids, fids = idx.children(fid)
+        for xid in dids:
+            ent = idx.e[xid]
+            mt = int(ent.get("mt", 0))
+            zd = datetime.fromtimestamp(max(0, min(2 << 36, mt)), UTC)
+            dt = "%04d-%02d-%02d %02d:%02d:%02d" % (
+                zd.year,
+                zd.month,
+                zd.day,
+                zd.hour,
+                zd.minute,
+                zd.second,
+            )
+            dirs.append(
+                {
+                    "lead": "-",
+                    "href": quotep(eb + "v/" + xid + "/"),
+                    "name": ent["n"],
+                    "sz": 0,
+                    "ext": "---",
+                    "dt": dt,
+                    "ts": mt,
+                    "enc": 1,
+                }
+            )
+        for xid in fids:
+            ent = idx.e[xid]
+            fn = ent["n"]
+            mt = int(ent.get("mt", 0))
+            zd = datetime.fromtimestamp(max(0, min(2 << 36, mt)), UTC)
+            dt = "%04d-%02d-%02d %02d:%02d:%02d" % (
+                zd.year,
+                zd.month,
+                zd.day,
+                zd.hour,
+                zd.minute,
+                zd.second,
+            )
+            if "." in fn:
+                ext = RE_HR.sub("@", fn.rsplit(".", 1)[1])
+                if len(ext) > 16:
+                    ext = ext[:16]
+            else:
+                ext = "%"
+            files.append(
+                {
+                    "lead": "-",
+                    "href": quotep(eb + "d/" + xid),
+                    "name": fn,
+                    "sz": int(ent.get("sz", 0)),
+                    "ext": ext,
+                    "dt": dt,
+                    "ts": mt,
+                    "enc": 1,
+                }
+            )
+        return dirs, files
+
+    def _enc_tx_get(self) -> bool:
+        if not self._enc_on():
+            return False
+        if "enc_status" in self.uparam:
+            return self.handle_enc_status()
+        if "enc_job" in self.uparam:
+            return self.handle_enc_job()
+        if "enc_cancel" in self.uparam:
+            return self.handle_enc_cancel()
+        if enc_crypt.DIRNAME not in self.vpath.split("/"):
+            return False
+        vroot, kind, fid = self._enc_parse_vp()
+        if kind not in ("d", "v"):
+            raise Pebkac(404)
+        root = self._enc_vroot_ap(vroot)
+        if not enc_crypt.is_vault(root):
+            raise Pebkac(404)
+        if kind == "d":
+            return self._enc_tx_file(root, fid)
+        if not fid:
+            raise Pebkac(404)
+        vn, rem = self.asrv.vfs.get(vroot, self.uname, True, False)
+        self.vn, self.rem = vn, rem
+        self.vpath = vroot
+        self.vpaths = vroot + "/" if vroot else ""
+        self._enc_ctx = (root, fid)
+        return self.tx_browser()
+
+    def _enc_tx_file(self, root: str, fid: str) -> bool:
+        vault = self._enc_vault(root)
+        if not vault:
+            raise Pebkac(423, "this folder is locked; enter the password to unlock it")
+        vault.refresh()
+        ent = vault.idx.get(fid)
+        if not ent or ent.get("t") != "f":
+            raise Pebkac(404)
+        name = ent["n"]
+        real = int(ent.get("sz", 0))
+        mt = int(ent.get("mt", 0))
+        if "th" in self.uparam:
+            return self._enc_tx_thumb(root, vault, fid, ent)
+
+        if "dl" in self.ouparam:
+            cdis = self.ouparam["dl"] or name
+            self.out_headers["Content-Disposition"] = gen_content_disposition(cdis)
+        else:
+            self.out_headers["Content-Disposition"] = gen_content_disposition(
+                name
+            ).replace("attachment;", "inline;", 1)
+
+        file_lastmod, do_send, can_range = self._chk_lastmod(mt)
+        self.out_headers["Last-Modified"] = file_lastmod
+        status = 200
+        lower, upper = 0, real
+        hrange = self.headers.get("range")
+        if (
+            do_send
+            and can_range
+            and hrange
+            and real
+            and "," not in hrange
+        ):
+            try:
+                if not hrange.lower().startswith("bytes"):
+                    raise Exception()
+                a, b = hrange.split("=", 1)[1].split("-")
+                lower = int(a.strip()) if a.strip() else 0
+                upper = (int(b.strip()) + 1) if b.strip() else real
+                if upper > real:
+                    upper = real
+                if lower < 0 or lower >= upper:
+                    raise Exception()
+            except Exception:
+                self.loud_reply(
+                    "invalid range",
+                    status=416,
+                    headers={"Content-Range": "bytes */%d" % (real,)},
+                )
+                return True
+            status = 206
+            self.out_headers["Content-Range"] = "bytes %d-%d/%d" % (
+                lower,
+                upper - 1,
+                real,
+            )
+
+        if "txt" in self.uparam:
+            mime = "text/plain; charset=%s" % (self.uparam["txt"] or "utf-8",)
+        elif "mime" in self.uparam:
+            mime = str(self.uparam.get("mime"))
+        else:
+            mime = guess_mime(name)
+        if mime not in SAFE_MIMES and "nohtml" in self.vn.flags:
+            mime = safe_mime(mime)
+
+        self.out_headers["Accept-Ranges"] = "bytes"
+        self.out_headers["Cache-Control"] = "private, no-store"
+        if self.mode == "HEAD" or not do_send:
+            self.send_headers(
+                "oh_f", length=upper - lower, status=status, mime=mime
+            )
+            return True
+
+        if upper - lower > 0x400000:
+            now = time.time()
+            self.dl_id = "%s:%s" % (self.ip, self.addr[1])
+            dls = self.conn.hsrv.dls
+            dls[self.dl_id] = (now, 0)
+            self.conn.hsrv.dli[self.dl_id] = (
+                now,
+                upper - lower,
+                self.vn,
+                self.vpath,
+                self.uname,
+            )
+
+        self.send_headers("oh_f", length=upper - lower, status=status, mime=mime)
+        sent = 0
+        try:
+            for buf in enc_crypt.iter_decrypt(
+                root, fid, vault.vk, real, lower, upper - lower
+            ):
+                self.s.sendall(buf)
+                sent += len(buf)
+        except (BrokenPipeError, ConnectionResetError):
+            return False
+        if self.dl_id:
+            self.conn.hsrv.dls[self.dl_id] = (time.time(), 0)
+        spd = self._spd(sent)
+        if self.do_log:
+            self.log(
+                "{:4} {} {} {}".format(status, self.req, mime, spd)
+            )
+        return True
+
+    def _enc_tx_thumb(self, root: str, vault, fid: str, ent: dict) -> bool:
+        name = ent["n"]
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in (
+            "jpg",
+            "jpeg",
+            "png",
+            "webp",
+            "gif",
+            "bmp",
+            "tif",
+            "tiff",
+            "avif",
+        ):
+            raise Pebkac(404, "no thumbnail for this file type")
+        if int(ent.get("sz", 0)) > (160 << 20):
+            raise Pebkac(413, "file too large for a thumbnail")
+        try:
+            import io
+
+            from PIL import Image
+        except Exception:
+            raise Pebkac(501, "thumbnails are unavailable on this server")
+        try:
+            data = b"".join(
+                enc_crypt.iter_decrypt(root, fid, vault.vk, int(ent["sz"]))
+            )
+            img = Image.open(io.BytesIO(data))
+            img.draft("RGB", (512, 512))
+            img.thumbnail((320, 320))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            out = io.BytesIO()
+            img.save(out, "JPEG", quality=82)
+        except Exception as ex:
+            self.log("thumb failed for %r: %s" % (name, ex), 3)
+            raise Pebkac(500, "thumbnail generation failed")
+        self.out_headers["Cache-Control"] = "no-store"
+        self.reply(out.getvalue(), mime="image/jpeg")
+        return True
+
+    # -- index mutations
+
+    def handle_enc_mkdir(self) -> bool:
+        self._enc_need(True)
+        root, vault, _kind, _fid = self._enc_current()
+        if not root:
+            raise Pebkac(400, "not an encrypted folder")
+        if not vault:
+            raise Pebkac(423, "this folder is locked")
+        parent = str(self.uparam.get("dir", "") or "")
+        name = self.uparam.get("name") or self._enc_body().get("name") or ""
+        name = undot(str(name).strip())
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not name:
+            raise Pebkac(400, "folder name required")
+        with enc_crypt.vault_lock(root):
+            vault.refresh()
+            if parent and (
+                parent not in vault.idx.e
+                or vault.idx.e[parent].get("t") != "d"
+            ):
+                raise Pebkac(400, "bad parent folder")
+            name = self._enc_unique_name(vault.idx, parent, name)
+            xid = vault.idx.add(parent, name, "d", 0, int(time.time()))
+            enc_crypt.save_index(root, vault.vk, vault.idx)
+        return self._enc_json({"ok": True, "id": xid, "name": name})
+
+    def handle_enc_rename(self) -> bool:
+        self._enc_need(True)
+        root, vault, _kind, _fid = self._enc_current()
+        if not root:
+            raise Pebkac(400, "not an encrypted folder")
+        if not vault:
+            raise Pebkac(423, "this folder is locked")
+        xid = str(self.uparam.get("id") or self._enc_body().get("id") or "")
+        name = self.uparam.get("name") or self._enc_body().get("name") or ""
+        name = undot(str(name).strip())
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not xid or not name:
+            raise Pebkac(400, "id and name are required")
+        with enc_crypt.vault_lock(root):
+            vault.refresh()
+            ent = vault.idx.get(xid)
+            if not ent:
+                raise Pebkac(404)
+            dup = vault.idx.lookup(ent.get("p", ""), name)
+            if dup and dup != xid:
+                raise Pebkac(409, "a file or folder with that name already exists")
+            vault.idx.rename(xid, name)
+            enc_crypt.save_index(root, vault.vk, vault.idx)
+        return self._enc_json({"ok": True, "id": xid, "name": name})
+
+    def handle_enc_rm(self) -> bool:
+        self._enc_need(True)
+        root, vault, _kind, _fid = self._enc_current()
+        if not root:
+            raise Pebkac(400, "not an encrypted folder")
+        if not vault:
+            raise Pebkac(423, "this folder is locked")
+        body = self._enc_body()
+        ids = body.get("ids") or []
+        if not isinstance(ids, list):
+            raise Pebkac(400, "ids must be a list")
+        one = self.uparam.get("id")
+        if one:
+            ids.append(one)
+        ids = [str(x) for x in ids][:10000]
+        with enc_crypt.vault_lock(root):
+            vault.refresh()
+            for xid in ids:
+                if xid not in vault.idx.e:
+                    continue
+                ents = [
+                    (x, dict(vault.idx.e[x]))
+                    for x in vault.idx.all_ids(xid)
+                    if x in vault.idx.e
+                ]
+                vault.idx.remove(xid)
+                for x, ent in ents:
+                    if ent.get("t") != "f":
+                        continue
+                    try:
+                        os.unlink(enc_crypt.blob_path(root, x))
+                    except Exception:
+                        pass
+            enc_crypt.save_index(root, vault.vk, vault.idx)
+        return self._enc_json({"ok": True, "removed": len(ids)})
+
+    # -- encrypted upload (streams plaintext -> ciphertext, no temp plaintext)
+
+    def _enc_tx_upload(self) -> bool:
+        self._enc_need(True)
+        root, vault, _kind, _fid = self._enc_current()
+        if not root:
+            raise Pebkac(400, "not an encrypted folder")
+        if not vault:
+            raise Pebkac(423, "this folder is locked")
+        ent_parent = str(self.uparam.get("dir", "") or "")
+        name = undot(str(self.uparam.get("name", "") or ""))
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if not name:
+            raise Pebkac(400, "file name is required")
+        clen = int(self.headers.get("content-length", -1))
+        if clen < 0:
+            raise Pebkac(411, "content-length is required for encrypted uploads")
+        if ent_parent and (
+            ent_parent not in vault.idx.e
+            or vault.idx.e[ent_parent].get("t") != "d"
+        ):
+            raise Pebkac(400, "bad parent folder")
+
+        fid = enc_crypt.new_id()
+        td = os.path.join(root, enc_crypt.DIRNAME, enc_crypt.TMP_DIR)
+        os.makedirs(td, exist_ok=True)
+        tmp = os.path.join(td, "up-" + fid)
+        reader, _remains = self.get_body_reader()
+        br = _Encreader(reader)
+
+        def prog(_n: int) -> None:
+            pass
+
+        try:
+            with open(tmp, "wb") as f:
+                enc_crypt.encrypt_stream(br, f, vault.vk, fid, clen, prog)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, enc_crypt.blob_path(root, fid))
+        except Exception as ex:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            if isinstance(ex, Pebkac):
+                raise
+            raise Pebkac(400, "encrypted upload failed: %s" % (ex,))
+
+        with enc_crypt.vault_lock(root):
+            vault.refresh()
+            name = self._enc_unique_name(vault.idx, ent_parent, name)
+            vault.idx.e[fid] = {
+                "n": name,
+                "t": "f",
+                "p": ent_parent,
+                "sz": clen,
+                "mt": int(time.time()),
+            }
+            enc_crypt.save_index(root, vault.vk, vault.idx)
+        self.log("encrypt-folder stored file id %s (%d bytes)" % (fid, clen))
+        return self._enc_json(
+            {"ok": True, "id": fid, "name": name, "sz": clen}
+        )
 
     def upload_flags(self, vfs: VFS) -> tuple[int, int, list[str], list[str]]:
         if self.args.nw:
@@ -4209,16 +4788,8 @@ class HttpCli(object):
         nullwrite = self.args.nw
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, False, True)
         self._assert_safe_rem(rem)
-        # enc lock check for uploads
-        try:
-            _ap = vfs.canonical(rem)
-            _is_enc, _is_locked, _, _ = self._enc_is_locked(_ap)
-            if _is_enc and _is_locked:
-                raise Pebkac(403, "folder is locked - password required")
-        except Pebkac:
-            raise
-        except:
-            pass
+        # encrypted folders only accept writes through the vault layer
+        self._enc_write_guard()
 
         hasher = None
         if nohash:
@@ -4417,14 +4988,6 @@ class HttpCli(object):
 
                     atomic_move(self.log, tabspath, abspath, vfs.flags)
                     tabspath = ""
-
-                    # folder encryption: encrypt new upload if inside encrypted folder
-                    try:
-                        is_enc2, is_locked2, enc_root2, enc_key2 = self._enc_is_locked(abspath)
-                        if is_enc2 and not is_locked2 and enc_key2 is not None:
-                            enc_crypt.encrypt_file(abspath, enc_key2)
-                    except:
-                        pass
 
                     at = time.time() - lifetime
                     if xau:
@@ -4639,6 +5202,7 @@ class HttpCli(object):
         nullwrite = self.args.nw
         vfs, rem = self.asrv.vfs.get(self.vpath, self.uname, True, True)
         self._assert_safe_rem(rem)
+        self._enc_write_guard()
 
         clen = int(self.headers.get("content-length", -1))
         if clen == -1:
@@ -5273,53 +5837,6 @@ class HttpCli(object):
         fs_path, file_sz = editions[selected_edition]
         logmsg += "{} ".format(selected_edition.lstrip("."))
 
-        # folder encryption: handle encrypted files
-        try:
-            # Check if file is inside encrypted folder
-            is_enc, is_locked, enc_root, enc_key = self._enc_is_locked(fs_path)
-            # Also check if file content itself is encrypted (magic) even if folder check missed due to .cpr handling
-            # For tx_file, fs_path could be "web/..." resource; skip those
-            if fs_path and not fs_path.startswith("<") and not self.vpath.startswith(".cpr"):
-                if is_enc and is_locked:
-                    self.reply(b'folder is locked - password required (X-Enc-PW header or ?enc_pw=)', status=403)
-                    return True
-                if is_enc and not is_locked and enc_key is not None:
-                    # If file content is encrypted, decrypt on the fly
-                    # Peek file header
-                    try:
-                        with open(fs_path, "rb") as _f:
-                            _head = _f.read(len(enc_crypt.MAGIC))
-                        if _head == enc_crypt.MAGIC:
-                            # Decrypt whole file for now; adjust file_sz and fs_path handling
-                            with open(fs_path, "rb") as _f:
-                                _enc = _f.read()
-                            _plain = enc_crypt.decrypt_bytes(_enc, enc_key)
-                            # Write decrypted to temp and serve that
-                            import tempfile
-                            _tmp = tempfile.NamedTemporaryFile(delete=False)
-                            _tmp.write(_plain)
-                            _tmp.close()
-                            # Override fs_path to temp file; update file_sz
-                            fs_path = _tmp.name
-                            file_sz = len(_plain)
-                            # Ensure temp cleanup after send
-                            self._enc_tmp_to_clean = fs_path
-                            # Disable gzip handling etc. for decrypted
-                            is_compressed = False
-                            selected_edition = "plain"
-                            editions = {"plain": (fs_path, file_sz)}
-                            # Reset headers that would imply gzip
-                            self.out_headers.pop("Content-Encoding", None)
-                    except Exception as ex:
-                        self.log("decrypt failed: %s" % (ex,), 3)
-                        raise
-        except Exception as ex:
-            # Don't swallow intentional Pebkac
-            if isinstance(ex, Pebkac):
-                raise
-            self.log("enc check error: %s" % (ex,), 6)
-
-
         #
         # partial
 
@@ -5766,27 +6283,10 @@ class HttpCli(object):
         t = self._can_zip(vn.flags)
         if t:
             raise Pebkac(400, t)
-        # enc lock check for zip
-        try:
-            _ap = vn.canonical(rem)
-            _is_enc, _is_locked, _, _ = self._enc_is_locked(_ap)
-            if _is_enc and _is_locked:
-                raise Pebkac(403, "folder is locked - password required")
-            # also check each item if inside enc
-            for _it in items:
-                try:
-                    _iap = vn.canonical(rem + "/" + _it if rem else _it)
-                    _ie, _il, _, _ = self._enc_is_locked(_iap)
-                    if _ie and _il:
-                        raise Pebkac(403, "folder is locked")
-                except Pebkac:
-                    raise
-                except:
-                    pass
-        except Pebkac:
-            raise
-        except:
-            pass
+        if self._enc_on() and (
+            self._enc_parse_vp()[1] or self._enc_root_here()
+        ):
+            raise Pebkac(403, "encrypted folders cannot be downloaded as an archive")
 
         logmsg = "{:4} {} ".format("", self.req)
         self.keepalive = False
@@ -6532,6 +7032,7 @@ class HttpCli(object):
                     vfs_virt[d2] = vfs  # typechk, value never read
 
         dirs = [x[0] for x in vfs_ls if stat.S_ISDIR(x[1].st_mode)]
+        dirs = [x for x in dirs if x != enc_crypt.DIRNAME]
 
         if not dots:
             if "dothidden" in vn.flags and ".hidden" in [x[0] for x in vfs_ls]:
@@ -7183,24 +7684,13 @@ class HttpCli(object):
         return True
 
     def handle_rm(self, req: list[str]) -> bool:
-        # enc lock check for delete
-        try:
-            _reqs = req if req else [self.vpath]
-            for _vp in _reqs:
-                try:
-                    _vfs, _rem = self.asrv.vfs.get(_vp, self.uname, False, False)
-                    _ap = _vfs.canonical(_rem)
-                    _ie, _il, _, _ = self._enc_is_locked(_ap)
-                    if _ie and _il:
-                        raise Pebkac(403, "folder is locked - password required")
-                except Pebkac:
-                    raise
-                except:
-                    pass
-        except Pebkac:
-            raise
-        except:
-            pass
+        enc_req = req.get("rm") if isinstance(req, dict) else req
+        if not isinstance(enc_req, list) or not enc_req:
+            enc_req = [self.vpath]
+        if self._enc_delete_vpaths(enc_req):
+            return True
+        # encrypted folder internals are managed through the vault endpoints
+        self._enc_internal_guard()
         if not req and not self.can_delete:
             if self.mode == "DELETE" and self.uname == "*":
                 raise Pebkac(401, "authenticate")  # webdav
@@ -7232,31 +7722,7 @@ class HttpCli(object):
         return True
 
     def handle_mv(self) -> bool:
-        # enc lock check for move
-        try:
-            _vfs1, _rem1 = self.asrv.vfs.get(self.vpath, self.uname, False, False)
-            _ap1 = _vfs1.canonical(_rem1)
-            _ie, _il, _, _ = self._enc_is_locked(_ap1)
-            if _ie and _il:
-                raise Pebkac(403, "folder is locked")
-            _dst = self.uparam.get("move") or ""
-            if _dst:
-                if self.is_vproxied and _dst.startswith(self.args.SR):
-                    _dst = _dst[len(self.args.RS):]
-                try:
-                    _vfs2, _rem2 = self.asrv.vfs.get(_dst.lstrip("/"), self.uname, False, True)
-                    _ap2 = _vfs2.canonical(_rem2)
-                    _ie2, _il2, _, _ = self._enc_is_locked(_ap2)
-                    if _ie2 and _il2:
-                        raise Pebkac(403, "destination folder is locked")
-                except Pebkac:
-                    raise
-                except:
-                    pass
-        except Pebkac:
-            raise
-        except:
-            pass
+        self._enc_internal_guard()
         # full path of new loc (incl filename)
         dst = self.uparam.get("move")
 
@@ -7271,6 +7737,7 @@ class HttpCli(object):
     def _mv(self, vsrc: str, vdst: str, overwrite: bool) -> bool:
         if self.args.no_mv:
             raise Pebkac(403, "the rename/move feature is disabled in server config")
+        self._enc_dest_guard(vdst)
 
         # `handle_cpmv` will catch 403 from these and raise 401
         svn, srem = self.asrv.vfs.get(vsrc, self.uname, True, False, True)
@@ -7290,17 +7757,7 @@ class HttpCli(object):
         return True
 
     def handle_cp(self) -> bool:
-        # enc lock check for copy
-        try:
-            _vfs1, _rem1 = self.asrv.vfs.get(self.vpath, self.uname, False, False)
-            _ap1 = _vfs1.canonical(_rem1)
-            _ie, _il, _, _ = self._enc_is_locked(_ap1)
-            if _ie and _il:
-                raise Pebkac(403, "folder is locked")
-        except Pebkac:
-            raise
-        except:
-            pass
+        self._enc_internal_guard()
         # full path of new loc (incl filename)
         dst = self.uparam.get("copy")
 
@@ -7315,6 +7772,7 @@ class HttpCli(object):
     def _cp(self, vsrc: str, vdst: str, overwrite: bool) -> bool:
         if self.args.no_cp:
             raise Pebkac(403, "the copy feature is disabled in server config")
+        self._enc_dest_guard(vdst)
 
         svn, srem = self.asrv.vfs.get(vsrc, self.uname, True, False)
         dvn, drem = self.asrv.vfs.get(vdst, self.uname, False, True)
@@ -7441,7 +7899,8 @@ class HttpCli(object):
             ret = "\n".join(retl)
             mime = "text/plain; charset=utf-8"
         else:
-            [x.pop(k) for k in ["name", "dt"] for y in [dirs, files] for x in y]
+            if not ls.get("enc"):
+                [x.pop(k) for k in ["name", "dt"] for y in [dirs, files] for x in y]
 
             # nonce (tlnote: norwegian for flake as in snowflake)
             if self.args.no_fnugg:
@@ -7473,19 +7932,31 @@ class HttpCli(object):
         abspath = vn.dcanonical(rem)
         dbv, vrem = vn.get_dbv(rem)
 
-        # folder encryption: check if inside encrypted dir and locked
-        try:
-            is_enc, is_locked, enc_root, enc_key = self._enc_is_locked(abspath)
-            if is_enc and is_locked:
-                if "ls" in self.uparam:
-                    self.reply(b'{"locked": true, "is_enc": true}', mime="application/json", status=403)
-                    return True
-                self._enc_locked = True
-                self._enc_root = enc_root
-            else:
-                self._enc_locked = False
-        except:
-            self._enc_locked = False
+        # folder encryption: is this a vault, or a virtual dir inside one?
+        enc_ctx = self._enc_browse_ctx(abspath)
+        enc_root = enc_ctx[0] if enc_ctx else None
+        enc_fid = enc_ctx[1] if enc_ctx else ""
+        enc_vault = self._enc_vault(enc_root) if enc_root else None
+        enc_locked = bool(enc_root and not enc_vault)
+        enc_base = self._enc_vpath_base()
+        if enc_ctx:
+            # never let a browser cache decrypted names/contents
+            self.out_headers["Cache-Control"] = "private, no-store"
+            vn_name = self.vpath.rsplit("/", 1)[-1] if self.vpath else "/"
+            vpnodes = [
+                ["", "/"],
+                [quotep(enc_base), html_escape(vn_name, crlf=True)],
+            ]
+            if enc_vault:
+                for xfid, xname in enc_vault.idx.trail(enc_fid):
+                    vpnodes.append(
+                        [
+                            quotep(
+                                enc_base + enc_crypt.DIRNAME + "/v/" + xfid + "/"
+                            ),
+                            html_escape(xname, crlf=True),
+                        ]
+                    )
 
         try:
             st = bos.stat(abspath)
@@ -7742,13 +8213,6 @@ class HttpCli(object):
 
         srv_infot = "</span> // <span>".join(srv_info)
 
-        # compute enc status for cgv
-        _is_enc = False
-        _is_locked = False
-        try:
-            _is_enc, _is_locked, _, _ = self._enc_is_locked(abspath)
-        except:
-            pass
         perms = []
         if self.can_read or is_dk:
             perms.append("read")
@@ -7802,19 +8266,35 @@ class HttpCli(object):
             "ls0": None,
             "acct": self.uname,
             "perms": perms,
-            "is_enc": _is_enc,
-            "is_locked": _is_locked,
         }
         # also see `js_htm` in authsrv.py
-        # enc info for JS
-        is_enc = False
-        is_locked = False
-        try:
-            _ie, _il, _, _ = self._enc_is_locked(abspath)
-            is_enc = _ie
-            is_locked = _il if _ie else False
-        except:
-            pass
+        is_enc = bool(enc_root)
+        is_locked = enc_locked
+        if enc_ctx:
+            trail = []
+            if enc_vault:
+                for xfid, xname in enc_vault.idx.trail(enc_fid):
+                    trail.append(
+                        [
+                            quotep(
+                                enc_base + enc_crypt.DIRNAME + "/v/" + xfid + "/"
+                            ),
+                            xname,
+                        ]
+                    )
+            cgv["enc"] = {
+                "vpath": self.vpath,
+                "base": enc_base,
+                "fid": enc_fid,
+                "locked": enc_locked,
+                "can_write": bool(
+                    self.can_write and self.can_move and self.can_delete
+                ),
+                "trail": trail,
+                "idle": int(
+                    getattr(self.args, "enc_idle", enc_crypt.DEFAULT_IDLE) or 0
+                ),
+            }
         j2a = {
             "cgv1": vn.js_htm,
             "cgv": cgv,
@@ -7892,10 +8372,7 @@ class HttpCli(object):
         ls_names = [x[0] for x in vfs_ls]
         ls_names.extend(list(vfs_virt))
         # hide internal enc dir always
-        ls_names = [x for x in ls_names if x != enc_crypt.ENC_DIRNAME]
-        # if folder is encrypted and locked, hide all files
-        if getattr(self, "_enc_locked", False):
-            ls_names = []
+        ls_names = [x for x in ls_names if x != enc_crypt.DIRNAME]
 
         if add_og and og_fn and not self.can_read:
             ls_names = [og_fn]
@@ -8000,21 +8477,6 @@ class HttpCli(object):
                 margin = "-"
 
             sz = inf.st_size
-            # if file is encrypted and unlocked, show plaintext size
-            try:
-                _ie2, _il2, _er2, _ek2 = self._enc_is_locked(fspath)
-                if _ie2 and not _il2 and _ek2 is not None and not is_dir:
-                    # peek magic to confirm encrypted
-                    try:
-                        with open(fspath, "rb") as _f2:
-                            _h = _f2.read(len(enc_crypt.MAGIC))
-                        if _h == enc_crypt.MAGIC:
-                            # plaintext size = file size - magic - nonce - tag
-                            sz = max(0, sz - len(enc_crypt.MAGIC) - enc_crypt.NONCE_LEN - 16)
-                    except:
-                        pass
-            except:
-                pass
             zd = datetime.fromtimestamp(max(0, min(2 << 36, linf.st_mtime)), UTC)
             dt = "%04d-%02d-%02d %02d:%02d:%02d" % (
                 zd.year,
@@ -8062,10 +8524,17 @@ class HttpCli(object):
                 "dt": dt,
                 "ts": int(linf.st_mtime),
             }
+            if is_dir and enc_crypt.is_vault(fspath):
+                item["encv"] = 1
+                item["encl"] = int(self._enc_vault(fspath) is None)
+                item["lead"] = '<span class="mi enc-lock" title="encrypted folder">lock</span>'
             if is_dir:
                 dirs.append(item)
             else:
                 files.append(item)
+
+        if enc_ctx:
+            dirs, files = self._enc_listing(enc_ctx, enc_vault, enc_locked)
 
         if is_dk and not vf.get("dks"):
             dirs = []
@@ -8224,6 +8693,8 @@ class HttpCli(object):
             ls_ret["dirs"] = dirs
             ls_ret["files"] = files
             ls_ret["taglist"] = taglist
+            if enc_ctx:
+                ls_ret["enc"] = cgv["enc"]
             return self.tx_ls(ls_ret)
 
         doc = self.uparam.get("doc") if self.can_read else None

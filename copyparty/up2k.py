@@ -1594,6 +1594,9 @@ class Up2k(object):
                 if iname == ".th" and bos.path.isdir(os.path.join(abspath, "top")):
                     # abandoned or foreign, skip
                     continue
+                if iname == ".cpp_enc":
+                    # password-protected folder internals; never index ciphertext
+                    continue
                 # self.log(" dir: {}".format(abspath))
                 try:
                     i1, i2, i3 = self._build_dir(

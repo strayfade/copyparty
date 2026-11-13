@@ -104,6 +104,7 @@ built in Norway 🇳🇴 with contributions from [not-norway](https://github.com
     * [identity providers](#identity-providers) - replace copyparty passwords with oauth and such
         * [generic header auth](#generic-header-auth) - other ways to auth by header
     * [user-changeable passwords](#user-changeable-passwords) - if permitted, users can change their own passwords
+    * [encrypted folders](./docs/encryption.md) - password-protected folders with at-rest encryption
     * [using the cloud as storage](#using-the-cloud-as-storage) - connecting to an aws s3 bucket and similar
     * [hiding from google](#hiding-from-google) - tell search engines you don't wanna be indexed
     * [themes](#themes)

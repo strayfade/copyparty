@@ -713,6 +713,12 @@ if (1)
 		"rc_sin": "Invert Selection",
 		"rc_shf": "Share This Folder",
 		"rc_shs": "Share Selection",
+		"rc_enc": "Encrypt Folder\u2026",
+		"rc_encu": "Unlock Folder\u2026",
+		"rc_encl": "Lock Folder Now",
+		"rc_encr": "Remove Password\u2026",
+		"rc_newd": "New Folder Here\u2026",
+		"rc_upl": "Upload Files Here\u2026",
 
 		"lang_set": "Refresh to make the change take effect?",
 };
@@ -1155,6 +1161,13 @@ ebi('rcm').innerHTML = (
 		'<a href="#" id="rnfo">' + L.rc_nfo + '</a>' +
 		'<a href="#" id="rnfi">' + L.rc_nfi + '</a>'
 	: '') +
+	'<div id="rs_enc" class="sep"></div>' +
+	'<a href="#" id="renc">' + L.rc_enc + '</a>' +
+	'<a href="#" id="rencu">' + L.rc_encu + '</a>' +
+	'<a href="#" id="rencl">' + L.rc_encl + '</a>' +
+	'<a href="#" id="rencr">' + L.rc_encr + '</a>' +
+	'<a href="#" id="rnewd">' + L.rc_newd + '</a>' +
+	'<a href="#" id="rupl">' + L.rc_upl + '</a>' +
 	'<div id="rs4" class="sep"></div>' +
 	'<a href="#" id="rsal">' + L.rc_sal + '</a>' +
 	'<a href="#" id="rsin">' + L.rc_sin + '</a>' +
@@ -3736,6 +3749,8 @@ function sortfiles(nodes) {
 				for (var b = 0, bb = nodes.length; b < bb; b++) {
 					var v = nodes[b][name];
 
+					if (name == "href" && nodes[b].name !== undefined)
+						v = nodes[b].name;
 					if ((v + '').indexOf('<a ') === 0)
 						v = v.split('>')[1];
 					else if (name == "href" && v)
@@ -7498,6 +7513,17 @@ var treectl = (function () {
 		if (r.chk_index_html(this.top, res))
 			return;
 
+		if (res.enc) {
+			CGV.enc = res.enc;
+			if (window.ENCV)
+				ENCV.on_ls(res.enc);
+		}
+		else if (CGV.enc) {
+			CGV.enc = null;
+			if (window.ENCV)
+				ENCV.on_ls(null);
+		}
+
 		if (this.ts != res.fnugg && res.fnugg != 'nei' && sread('no_fnugg') !== '1')
 			toast.warn(60, "WARNING: A proxy/CDN between your webbrowser and the server is misbehaving, and caching responses it shouldn't. As a result, you are now seeing stale directory listings. There will be many issues.\n\nIf you need to ignore this and stop these messages, you can set the global-option 'no-fnugg' on the server, or click <code>π</code> and run this: <code>STG.no_fnugg=1</code>");
 
@@ -7661,7 +7687,7 @@ var treectl = (function () {
 		for (var a = 0; a < nodes.length; a++) {
 			var tn = nodes[a],
 				bhref = tn.href.split('?')[0],
-				fname = uricom_dec(bhref),
+				fname = tn.name !== undefined ? tn.name : uricom_dec(bhref),
 				hname = esc(fname),
 				id = 'f-' + ('00000000' + crc32(fname)).slice(-8),
 				lang = showfile.getlang(fname);
@@ -7684,15 +7710,17 @@ var treectl = (function () {
 					tn.lead = dlbtn + '<a href="?wopi=' + bhref +
 						'" rel="nofollow" name="' + hname + '"><span class="mi">insert_drive_file</span></a>';
 				else if (tn.lead == '-')
-					tn.lead = dlbtn + '<a href="?doc=' + bhref + '" id="t' + id +
+					tn.lead = dlbtn + (tn.enc ? '' : '<a href="?doc=' + bhref + '" id="t' + id +
 						'" rel="nofollow" class="doc' + (lang ? ' bri' : '') +
-						'" hl="' + id + '" name="' + hname + '"><span class="mi">edit</span></a>';
+						'" hl="' + id + '" name="' + hname + '"><span class="mi">edit</span></a>');
 				else
 					tn.lead = dlbtn + tn.lead;
 			}
 
 			var cl = /\.PARTIAL$/.exec(fname) ? ' class="fade"' : '',
-				ln = ['<tr' + cl + '><td>' + tn.lead + '</td><td><a href="' +
+				ea = tn.encv ? ' data-encv="1" data-encl="' + (tn.encl ? 1 : 0) + '"' :
+					tn.enc ? ' data-enc="1"' : '',
+				ln = ['<tr' + cl + ea + '><td>' + tn.lead + '</td><td><a href="' +
 					top + tn.href + '" id="' + id + '">' + hname +
 					'</a></td><td sortv="' + tn.sz + '">' + humansize_geist(tn.sz)];
 
@@ -9882,6 +9910,12 @@ var rcm = (function () {
 					break;
 				case 'sin': msel.evsel(null, 't'); break;
 				case 'shr': fileman.share(); break;
+				case 'enc': if (window.ENCV) ENCV.menu('new'); break;
+				case 'encu': if (window.ENCV) ENCV.menu('unlock'); break;
+				case 'encl': if (window.ENCV) ENCV.menu('lock'); break;
+				case 'encr': if (window.ENCV) ENCV.menu('remove'); break;
+				case 'newd': if (window.ENCV) ENCV.menu('mkdir'); break;
+				case 'upl': if (window.ENCV) ENCV.menu('upload'); break;
 			}
 			r.hide(true);
 		};
@@ -9905,7 +9939,10 @@ var rcm = (function () {
 				var url = selFile.url.split("?")[0],
 					vsp = vsplit(url);
 				selFile.dpath = vsp[0];
-				selFile.name = vsp[1];
+				selFile.name = fa.textContent || vsp[1];
+				selFile.encv = !!file.getAttribute("data-encv");
+				selFile.encl = file.getAttribute("data-encl") == "1";
+				selFile.enc = !!file.getAttribute("data-enc");
 				if (url.endsWith("/"))
 					selFile.type = "dir";
 				else {
@@ -9941,6 +9978,8 @@ var rcm = (function () {
 		clmod(ebi('rrnm'), 'hide', !has_sel);
 		clmod(ebi('rs3'), 'hide', !has_sel);
 		clmod(ebi('rs4'), 'hide', !has_sel && !has(perms, "write"));
+		if (window.ENCV)
+			ENCV.menu_ready(selFile);
 		var shr = ebi('rshr');
 		clmod(shr, 'hide', !can_shr || !get_evpath().indexOf(have_shr));
 		shr.innerHTML = has_sel ? L.rc_shs : L.rc_shf;
@@ -10021,7 +10060,8 @@ function reload_browser() {
 	while (rm.nextSibling)
 		rm.parentNode.removeChild(rm.nextSibling);
 
-	for (var a = 0; a < parts.length - 1; a++) {
+	var enc_done = window.ENCV && ENCV.draw_trail();
+	for (var a = 0; !enc_done && a < parts.length - 1; a++) {
 		link += parts[a] + '/';
 		var link2 = dks[link] ? addq(link, 'k=' + dks[link]) : link;
 

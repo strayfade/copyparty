@@ -151,7 +151,7 @@
 <tbody>
 
 {%- for f in files %}
-<tr><td>{{ f.lead }}</td><td><a href="{{ f.href }}">{{ f.name|e }}</a></td><td>{{ f.sz }}</td>
+<tr{% if f.encv %} data-encv="1" data-encl="{{ f.encl }}"{% elif f.enc %} data-enc="1"{% endif %}><td>{{ f.lead }}</td><td><a href="{{ f.href }}">{{ f.name|e }}</a></td><td>{{ f.sz }}</td>
 {%- if f.tags is defined %}
 	{%- for k in taglist %}<td>{{ f.tags[k]|e }}</td>{%- endfor %}
 {%- endif %}<td>{{ f.ext }}</td><td>{{ f.dt }}</td></tr>

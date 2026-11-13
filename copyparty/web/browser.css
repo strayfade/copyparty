@@ -4112,3 +4112,27 @@ html::-webkit-scrollbar,
 body::-webkit-scrollbar {
   display: none !important;
 }
+
+/* password-protected (encrypted) folders */
+.enc-lock{margin-right:0.35em;opacity:0.75;font-size:1.05em}
+tr[data-encv] > td:nth-child(2) > a{font-weight:600}
+.enc_badge{margin-left:1em;font-size:0.86em;color:var(--fg-weak);white-space:nowrap}
+.enc_badge .mi{vertical-align:-0.15em;margin-right:0.25em;font-size:1.15em}
+.enc_badge .enc_locknow{margin-left:0.7em;text-decoration:underline}
+#enc_lock_card{max-width:34em;margin:3em auto;padding:2em 2.4em;border:1px solid var(--bg-u5);border-radius:14px;background:var(--bg-u3, var(--bg-u4));text-align:center}
+#enc_lock_card h2{margin:0 0 0.8em;font-size:1.25em;font-weight:600}
+#enc_lock_card h2 .mi{vertical-align:-0.15em;margin-right:0.3em}
+#enc_lock_card p{margin:0.5em 0;color:var(--fg-weak)}
+.enc_unlockrow{display:flex;gap:0.6em;justify-content:center;align-items:center;margin:1.2em 0 0.4em}
+.enc_unlockrow input{width:15em}
+.enc_unlockrow a{padding:0.35em 1.1em;border:1px solid var(--bg-u5);border-radius:8px}
+.enc_warn{color:#e66 !important}
+.enc_err{color:#e66;min-height:1.2em;margin-top:0.5em;font-size:0.9em}
+.enc_note{opacity:0.55;font-size:0.82em;margin-top:1em !important}
+.enc_bar{height:0.55em;margin:0.9em 0;border-radius:999px;background:var(--bg-u5);overflow:hidden}
+.enc_bar > div{height:100%;width:0;background:var(--fg);transition:width 0.15s linear}
+.enc_dlg{width:100%;border-collapse:collapse}
+.enc_dlg td{padding:0.2em 0}
+.enc_dlg input{width:100%;box-sizing:border-box}
+.enc_btns{margin-top:1.2em;display:flex;gap:1em;justify-content:flex-end;align-items:center}
+.enc_btns a{padding:0.3em 0.9em;border:1px solid var(--bg-u5);border-radius:8px}

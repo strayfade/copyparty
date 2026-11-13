@@ -321,6 +321,13 @@ class VHttpSrv(object):
         self.thumbcli = None
         self.u2idx = None
 
+        from copyparty import crypt as enc_crypt
+
+        self.enc = True
+        self.enc_idle = 300
+        self.enc_sessions = enc_crypt.Sessions(300)
+        self.enc_jobs = enc_crypt.Jobs()
+
     def cachebuster(self):
         return "a"
 
